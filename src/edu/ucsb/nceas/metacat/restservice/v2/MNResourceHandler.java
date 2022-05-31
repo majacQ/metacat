@@ -94,13 +94,13 @@ import edu.ucsb.nceas.metacat.common.Settings;
 import edu.ucsb.nceas.metacat.common.query.stream.ContentTypeInputStream;
 import edu.ucsb.nceas.metacat.dataone.D1AuthHelper;
 import edu.ucsb.nceas.metacat.dataone.MNodeService;
+import edu.ucsb.nceas.metacat.doi.DOIException;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.restservice.D1ResourceHandler;
 import edu.ucsb.nceas.metacat.restservice.multipart.CheckedFile;
 import edu.ucsb.nceas.metacat.restservice.multipart.DetailedFileInputStream;
 import edu.ucsb.nceas.metacat.restservice.multipart.MultipartRequestWithSysmeta;
 import edu.ucsb.nceas.metacat.restservice.multipart.StreamingMultipartRequestResolver;
-import edu.ucsb.nceas.metacat.util.DeleteOnCloseFileInputStream;
 import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 
 /**
@@ -133,7 +133,6 @@ import edu.ucsb.nceas.utilities.PropertyNotFoundException;
  * 		delete() - DELETE /d1/mn/object/PID
  * 		archive() - PUT /d1/mn/archive/PID
  *      updateSystemMetadata() - PUT /d1/mn/meta
-
  *    systemMetadataChanged() - POST /dirtySystemMetadata/PID
  * 	
  * 	MNReplication
@@ -158,6 +157,8 @@ public class MNResourceHandler extends D1ResourceHandler {
     protected static final String RESOURCE_PACKAGE = "packages";
     protected static final String RESOURCE_TOKEN = "token";
     protected static final String RESOURCE_WHOAMI = "whoami";
+    //make the status of identifier (e.g. DOI) public
+    protected static final String RESOURCE_PUBLISH_IDENTIFIER = "publishIdentifier";
 
 
 
@@ -431,7 +432,7 @@ public class MNResourceHandler extends D1ResourceHandler {
                         generateIdentifier();
                         status = true;
                     }
-                } else if (resource.startsWith(RESOURCE_PUBLISH)) {
+                } else if (resource.startsWith(RESOURCE_PUBLISH) && !resource.startsWith(RESOURCE_PUBLISH_IDENTIFIER)) {
                     logMetacat.debug("Using resource: " + RESOURCE_PUBLISH);
                     // PUT
                     if (httpVerb == PUT) {
@@ -516,6 +517,16 @@ public class MNResourceHandler extends D1ResourceHandler {
 	                    doViews(format, pid);
 	                    status = true;
 	                }
+                } else if (resource.startsWith(RESOURCE_PUBLISH_IDENTIFIER)) {
+                    logMetacat.debug("Using resource: " + RESOURCE_PUBLISH_IDENTIFIER);
+                    // PUT
+                    if (httpVerb == PUT) {
+                        // after the command
+                        extra = parseTrailing(resource, RESOURCE_PUBLISH_IDENTIFIER);
+                        extra = decode(extra);
+                        publishIdentifier(extra);
+                        status = true;
+                    }  
                 } else {
                     throw new InvalidRequest("0000", "No resource matched for " + resource);
                 }
@@ -565,6 +576,7 @@ public class MNResourceHandler extends D1ResourceHandler {
 	            response.setStatus(200);
 	            out = response.getOutputStream();
 	            TypeMarshaller.marshalTypeToOutputStream(qel, out);
+	            IOUtils.closeQuietly(out);
 	            return;
 	    	} else {
 	    		if (query != null) {
@@ -584,7 +596,8 @@ public class MNResourceHandler extends D1ResourceHandler {
 	                // write the results to the output stream
 	                IOUtils.copyLarge(stream, out);
 	                long end = System.currentTimeMillis();
-	                logMetacat.info(Settings.PERFORMANCELOG + Settings.PERFORMANCELOG_QUERY_METHOD + query + " Total query method" + Settings.PERFORMANCELOG_DURASION + (end-start)/1000);
+	                logMetacat.info(Settings.PERFORMANCELOG + Settings.PERFORMANCELOG_QUERY_METHOD + query + " Total query method" + Settings.PERFORMANCELOG_DURATION + (end-start)/1000);
+	                IOUtils.closeQuietly(out);
 	                return;
 	    		} else {
 	    			MNodeService mnode = MNodeService.getInstance(request);
@@ -594,6 +607,7 @@ public class MNResourceHandler extends D1ResourceHandler {
 		            response.setStatus(200);
 		            out = response.getOutputStream();
 		            TypeMarshaller.marshalTypeToOutputStream(qed, out);
+		            IOUtils.closeQuietly(out);
 		            return;
 	    		}
 	    	}
@@ -651,6 +665,7 @@ public class MNResourceHandler extends D1ResourceHandler {
             out = response.getOutputStream();
             // write the results to the output stream
             IOUtils.copyLarge(stream, out);
+            IOUtils.closeQuietly(out);
             return;
         } catch (BaseException be) {
             // report Exceptions as clearly as possible
@@ -684,19 +699,26 @@ public class MNResourceHandler extends D1ResourceHandler {
     		    long start = System.currentTimeMillis();
     			Identifier identifier = new Identifier();
     			identifier.setValue(pid);
-				InputStream stream = mnode.view(session, format, identifier);
-
-    			// set the content-type if we have it from the implementation
-    			if (stream instanceof ContentTypeInputStream) {
-    				response.setContentType(((ContentTypeInputStream) stream).getContentType());
-    			}
+    			InputStream stream = null;
+    			try {
+    			    stream = mnode.view(session, format, identifier);
+                // set the content-type if we have it from the implementation
+                if (stream instanceof ContentTypeInputStream) {
+                    response.setContentType(((ContentTypeInputStream) stream).getContentType());
+                }
                 response.setStatus(200);
                 out = response.getOutputStream();
                 // write the results to the output stream
                 IOUtils.copyLarge(stream, out);
-                long end = System.currentTimeMillis();
-                logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_VIEW_METHOD + " Total view method" + Settings.PERFORMANCELOG_DURASION + (end-start)/1000);
-                return;
+    			} finally {
+    			    if (stream != null) {
+                    IOUtils.closeQuietly(stream);
+    			    }
+    			}
+            long end = System.currentTimeMillis();
+            IOUtils.closeQuietly(out);
+            logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_VIEW_METHOD + " Total view method" + Settings.PERFORMANCELOG_DURATION + (end-start)/1000);
+            return;
     		} else {
     			// TODO: list the registered views
                 //BaseException ni = new NotImplemented("9999", "MN.listViews() is not implemented at this node");
@@ -706,6 +728,7 @@ public class MNResourceHandler extends D1ResourceHandler {
     	        response.setContentType("text/xml");
     	        response.setStatus(200);
     	        TypeMarshaller.marshalTypeToOutputStream(list, response.getOutputStream());
+    	        IOUtils.closeQuietly(response.getOutputStream());
     		}
 	    	
 	        
@@ -876,6 +899,7 @@ public class MNResourceHandler extends D1ResourceHandler {
         response.setContentType("text/xml");
         OutputStream out = response.getOutputStream();
         TypeMarshaller.marshalTypeToOutputStream(identifier, out);
+        IOUtils.closeQuietly(out);
     }
 
     /**
@@ -977,6 +1001,7 @@ public class MNResourceHandler extends D1ResourceHandler {
         OutputStream out = response.getOutputStream();
         out = response.getOutputStream();  
         IOUtils.copy(result, out);
+        IOUtils.closeQuietly(out);
         //IOUtils.copyLarge(result, out);
     }
     
@@ -1039,6 +1064,7 @@ public class MNResourceHandler extends D1ResourceHandler {
         logMetacat.debug("serializing response");
         TypeMarshaller.marshalTypeToOutputStream(c, response.getOutputStream());
         logMetacat.debug("done serializing response.");
+        IOUtils.closeQuietly(response.getOutputStream());
         
     }
     
@@ -1146,7 +1172,7 @@ public class MNResourceHandler extends D1ResourceHandler {
             out = response.getOutputStream();
             // write the object to the output stream
             IOUtils.copyLarge(dataBytes, out);
-            
+            IOUtils.closeQuietly(out);
         } catch (IOException e) {
             String msg = "There was an error writing the output: " + e.getMessage();
             logMetacat.error(msg);
@@ -1174,6 +1200,7 @@ public class MNResourceHandler extends D1ResourceHandler {
         response.setContentType("text/xml");
         response.setStatus(200);
         TypeMarshaller.marshalTypeToOutputStream(n, response.getOutputStream());
+        IOUtils.closeQuietly(response.getOutputStream());
         
     }
     
@@ -1288,7 +1315,7 @@ public class MNResourceHandler extends D1ResourceHandler {
         response.setContentType("text/xml");
         
         TypeMarshaller.marshalTypeToOutputStream(log, out);
-        
+        IOUtils.closeQuietly(out);
     }
     
     
@@ -1378,13 +1405,20 @@ public class MNResourceHandler extends D1ResourceHandler {
             }
             response.setContentType(mimeType);
             response.setHeader("Content-Disposition", "inline; filename=\"" + filename+"\"");
-            
-            InputStream data = MNodeService.getInstance(request).get(session, id);
-
-            out = response.getOutputStream();  
-            IOUtils.copyLarge(data, out);
+            InputStream data = null;
+            try {
+                data = MNodeService.getInstance(request).get(session, id);
+                out = response.getOutputStream();  
+                response.setStatus(200);
+                IOUtils.copyLarge(data, out);
+                IOUtils.closeQuietly(out);
+            } finally {
+                if (data != null) {
+                   IOUtils.closeQuietly(data);
+                }
+            }
             long end = System.currentTimeMillis();
-            logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_GET_METHOD + " Total get method" + Settings.PERFORMANCELOG_DURASION + (end-start)/1000);
+            logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_GET_METHOD + " Total get method" + Settings.PERFORMANCELOG_DURATION + (end-start)/1000);
         }
         else
         { //call listObjects with specified params
@@ -1473,7 +1507,7 @@ public class MNResourceHandler extends D1ResourceHandler {
             response.setContentType("text/xml");
             // Serialize and write it to the output stream
             TypeMarshaller.marshalTypeToOutputStream(ol, out);
-            
+            IOUtils.closeQuietly(out);
         }
         
     }
@@ -1499,24 +1533,27 @@ public class MNResourceHandler extends D1ResourceHandler {
         	formatId = new ObjectFormatIdentifier();
         	formatId.setValue(format);
         }
-		InputStream is = MNodeService.getInstance(request).getPackage(session, formatId , id);
-        
-        // use the provided filename
-        String filename = null;
-        if (is instanceof DeleteOnCloseFileInputStream) {
-            filename = ((DeleteOnCloseFileInputStream)is).getFile().getName();
-        } else {
-        	filename = "dataPackage-" + System.currentTimeMillis() + ".zip";
+        InputStream is = null;
+        try {
+            is = MNodeService.getInstance(request).getPackage(session, formatId , id);
+
+	        //Use the pid as the file name prefix, replacing all non-word characters
+	        String filename = pid.replaceAll("\\W", "_") + ".zip";
+
+            response.setHeader("Content-Disposition", "inline; filename=\"" + filename+"\"");
+            response.setContentType("application/zip");
+            response.setStatus(200);
+            OutputStream out = response.getOutputStream();
+            
+            // write it to the output stream
+            IOUtils.copyLarge(is, out);
+            IOUtils.closeQuietly(out);
+            long end = System.currentTimeMillis();
+            logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_GET_PACKAGE_METHOD + " Total getPackage method" + Settings.PERFORMANCELOG_DURATION + (end-start)/1000);
+            
+        } finally {
+            IOUtils.closeQuietly(is);
         }
-        response.setHeader("Content-Disposition", "inline; filename=\"" + filename+"\"");
-        response.setContentType("application/zip");
-        response.setStatus(200);
-        OutputStream out = response.getOutputStream();
-        
-        // write it to the output stream
-        IOUtils.copyLarge(is, out);
-        long end = System.currentTimeMillis();
-        logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_GET_PACKAGE_METHOD + " Total getPackage method" + Settings.PERFORMANCELOG_DURASION + (end-start)/1000);
    }
     
 	protected void publish(String pid) throws InvalidToken, ServiceFailure,
@@ -1535,6 +1572,34 @@ public class MNResourceHandler extends D1ResourceHandler {
 
 		// write new identifier to the output stream
 		TypeMarshaller.marshalTypeToOutputStream(newIdentifier, out);
+		IOUtils.closeQuietly(out);
+	}
+	
+	/**
+	 * Make the status of the identifier public
+	 * @param identifier  
+	 * @throws InvalidToken
+	 * @throws ServiceFailure
+	 * @throws NotAuthorized
+	 * @throws NotImplemented
+	 * @throws InvalidRequest
+	 * @throws NotFound
+	 * @throws IdentifierNotUnique
+	 * @throws UnsupportedType
+	 * @throws InsufficientResources
+	 * @throws InvalidSystemMetadata
+	 * @throws DOIException
+	 * @throws IOException
+	 * @throws MarshallingException
+	 */
+	protected void publishIdentifier(String identifier) throws InvalidToken, ServiceFailure, NotAuthorized, 
+	                         NotImplemented, InvalidRequest, NotFound, IdentifierNotUnique, UnsupportedType, 
+	                         InsufficientResources, InvalidSystemMetadata, DOIException, IOException, MarshallingException {
+	    Identifier id = new Identifier();
+        id.setValue(identifier);
+        MNodeService.getInstance(request).publishIdentifier(session, id);
+        //the publish started in another thread, we just set the status to success
+        response.setStatus(200);
 	}
     
     /**
@@ -1561,6 +1626,7 @@ public class MNResourceHandler extends D1ResourceHandler {
         
         // Serialize and write it to the output stream
         TypeMarshaller.marshalTypeToOutputStream(sysmeta, out);
+        IOUtils.closeQuietly(out);
    }
     
     
@@ -1654,8 +1720,9 @@ public class MNResourceHandler extends D1ResourceHandler {
                 } else {
                     throw new InvalidRequest("1000", "Operation must be create or update.");
                 }
+                IOUtils.closeQuietly(out);
                 long end = System.currentTimeMillis();
-                logMetacat.info(Settings.PERFORMANCELOG + pid.getValue() + Settings.PERFORMANCELOG_CREATE_UPDATE_METHOD + " Total create/update method" + Settings.PERFORMANCELOG_DURASION + (end-start)/1000);
+                logMetacat.info(Settings.PERFORMANCELOG + pid.getValue() + Settings.PERFORMANCELOG_CREATE_UPDATE_METHOD + " Total create/update method" + Settings.PERFORMANCELOG_DURATION + (end-start)/1000);
         } catch (Exception e) {
             if(objFile != null) {
                 //objFile.deleteOnExit();
@@ -1691,7 +1758,8 @@ public class MNResourceHandler extends D1ResourceHandler {
         MNodeService.getInstance(request).delete(session, id);
         TypeMarshaller.marshalTypeToOutputStream(id, out);
         long end = System.currentTimeMillis();
-        logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_DELETE_METHOD + " Total delete method" + Settings.PERFORMANCELOG_DURASION + (end-start)/1000);
+        IOUtils.closeQuietly(out);
+        logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_DELETE_METHOD + " Total delete method" + Settings.PERFORMANCELOG_DURATION + (end-start)/1000);
 
     }
     
@@ -1719,8 +1787,9 @@ public class MNResourceHandler extends D1ResourceHandler {
         MNodeService.getInstance(request).archive(session, id);
         
         TypeMarshaller.marshalTypeToOutputStream(id, out);
+        IOUtils.closeQuietly(out);
         long end = System.currentTimeMillis();
-        logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_ARCHIVE_METHOD + " Total archive method" + Settings.PERFORMANCELOG_DURASION + (end-start)/1000);
+        logMetacat.info(Settings.PERFORMANCELOG + pid + Settings.PERFORMANCELOG_ARCHIVE_METHOD + " Total archive method" + Settings.PERFORMANCELOG_DURATION + (end-start)/1000);
     }
 
 	protected SynchronizationFailed collectSynchronizationFailed() throws IOException, ServiceFailure, InvalidRequest, MarshallingException, InstantiationException, IllegalAccessException, ParserConfigurationException, SAXException  {
@@ -1800,3 +1869,4 @@ public class MNResourceHandler extends D1ResourceHandler {
 	}
 
 }
+

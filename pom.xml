@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.ecoinformatics</groupId>
     <artifactId>metacat</artifactId>
-    <version>2.13.0</version>
+    <version>2.18.0</version>
     <name>metacat</name>
     <packaging>war</packaging>
     <url>http://maven.apache.org</url>
@@ -12,7 +12,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <d1_libclient_version>2.3.1</d1_libclient_version>
         <d1_portal_version>2.3.2</d1_portal_version>
-        <metacat_common_version>2.13.0</metacat_common_version>
+        <metacat_common_version>2.18.0</metacat_common_version>
     </properties>
     <repositories>
         <repository>
@@ -37,6 +37,11 @@
              <name>central maven repo https</name>
              <url>https://repo.maven.apache.org/maven2</url>
         </repository>
+        <repository>
+            <id>central maven repo1</id>
+             <name>central maven repo1 https</name>
+             <url>https://repo1.maven.org/maven2</url>
+        </repository>
     </repositories>
     <dependencies>
     	<dependency>
@@ -59,34 +64,6 @@
 			<artifactId>datamanager</artifactId>
 			<version>1.0.0</version>
 		</dependency>
-    	<dependency>
-    		<groupId>gov.loc</groupId>
-			<artifactId>bagit</artifactId>
-			<version>4.4</version>
-			<type>jar</type>
-			<exclusions>
-				<exclusion>
-					<groupId>xml-apis</groupId>
-					<artifactId>xml-apis</artifactId>
-		        </exclusion>
-		        <exclusion>
-					<groupId>org.apache.httpcomponents</groupId>
-					<artifactId>httpclient</artifactId>
-		        </exclusion>
-		        <exclusion>
-		        	<groupId>org.apache.httpcomponents</groupId>
-    				<artifactId>httpmime</artifactId>
-		        </exclusion>
-		        <exclusion>
-					<groupId>commons-codec</groupId>
-					<artifactId>commons-codec</artifactId>
-		        </exclusion>
-		        <exclusion>
-                    <groupId>log4j</groupId>
-                    <artifactId>log4j</artifactId>
-                </exclusion>
-			</exclusions>
-    	</dependency>
     	<dependency>
             <artifactId>d1_portal</artifactId>
             <groupId>org.dataone</groupId>
@@ -133,6 +110,10 @@
                 <exclusion>
                     <groupId>log4j</groupId>
                     <artifactId>log4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>edu.uiuc.ncsa.myproxy</groupId>
+                    <artifactId>oa4mp-client-oauth1</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -297,7 +278,7 @@
 		<dependency>
     		<groupId>org.apache.wicket</groupId>
     		<artifactId>wicket-core</artifactId>
-			<version>6.7.0</version>
+			<version>7.17.0</version>
 			<exclusions>
                 <exclusion>
                   <groupId>org.slf4j</groupId>
@@ -318,7 +299,7 @@
 		<dependency>
 			<groupId>org.apache.solr</groupId>
 			<artifactId>solr-solrj</artifactId>
-			<version>8.4.1</version>
+			<version>8.8.2</version>
 			<exclusions>
 				<exclusion>
 		        	<groupId>junit</groupId>
@@ -333,13 +314,8 @@
 		<dependency>
 			<groupId>commons-io</groupId>
 			<artifactId>commons-io</artifactId>
-			<version>2.5</version>
+			<version>2.7</version>
 		</dependency>
-		<dependency>
-            <groupId>commons-httpclient</groupId>
-            <artifactId>commons-httpclient</artifactId>
-            <version>3.1</version>
-        </dependency>
 		<dependency>
       		<groupId>org.dspace</groupId>
 			<artifactId>oaicat</artifactId>
@@ -355,11 +331,10 @@
 			<artifactId>junit</artifactId>
 			<version>4.13.1</version>
 		</dependency>
-		<!-- require newer xercesImpl -->
 		<dependency>
 			<groupId>xerces</groupId>
 			<artifactId>xercesImpl</artifactId>
-			<version>2.12.0</version>
+			<version>2.12.2</version>
 		</dependency>
 		<dependency>
             <groupId>commons-jxpath</groupId>
@@ -375,7 +350,7 @@
         <dependency>
 			<groupId>org.apache.jena</groupId>
 			<artifactId>jena-tdb</artifactId>
-			<version>1.0.0</version>
+			<version>1.1.2</version>
 			<exclusions>
 			     <exclusion>
                     <groupId>log4j</groupId>
@@ -398,6 +373,85 @@
             <groupId>commons-codec</groupId>
             <artifactId>commons-codec</artifactId>
             <version>1.11</version>
+        </dependency>
+        <dependency>
+            <groupId>org.dataone</groupId>
+            <artifactId>bookkeeper-api</artifactId>
+            <version>1.0.1</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.postgresql</groupId>
+                    <artifactId>postgresql</artifactId>
+                </exclusion>
+                <exclusion>
+                     <groupId>org.flywaydb</groupId>
+                     <artifactId>flyway-maven-plugin</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.dropwizard</groupId>
+                    <artifactId>dropwizard-core</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.dropwizard</groupId>
+                    <artifactId>dropwizard-json-logging</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.dropwizard</groupId>
+                    <artifactId>dropwizard-testing</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.dropwizard</groupId>
+                    <artifactId>dropwizard-jdbi3</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.dropwizard</groupId>
+                    <artifactId>dropwizard-auth</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.opentable.components</groupId>
+                    <artifactId>otj-pg-embedded</artifactId>
+                 </exclusion>
+                <exclusion>
+                    <groupId>org.flywaydb</groupId>
+                    <artifactId>flyway-maven-plugin</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.junit.platform</groupId>
+                    <artifactId>junit-platform-launcher</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.junit.jupiter</groupId>
+                    <artifactId>junit-jupiter</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.junit.vintage</groupId>
+                    <artifactId>junit-vintage-engine</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.nimbusds</groupId>
+                    <artifactId>nimbus-jose-jwt</artifactId>
+                </exclusion>
+                <exclusion>
+                   <groupId>org.hibernate.validator</groupId>
+                    <artifactId>hibernate-validator</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+	<dependency>
+		<groupId>org.dataone</groupId>
+		<artifactId>speedbagit</artifactId>
+		<version>1.0.2</version>
+		<type>jar</type>
+	</dependency>
+        <dependency>
+            <groupId>com.github.jsonld-java</groupId>
+            <artifactId>jsonld-java</artifactId>
+            <version>0.13.2</version>
+        </dependency>
+        <dependency>
+            <groupId>edu.ucsb.nceas</groupId>
+            <artifactId>osti-elink</artifactId>
+            <version>1.0.0</version>
         </dependency>
     </dependencies>
 </project>

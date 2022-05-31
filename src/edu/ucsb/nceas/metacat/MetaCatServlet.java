@@ -263,6 +263,7 @@ public class MetaCatServlet extends HttpServlet {
     private static boolean _firstHalfInitialized = false;
     private static boolean _fullyInitialized = false;
     private MetacatHandler handler = null;
+    private static Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
     
     // Constants -- these should be final in a servlet
     public static final String SCHEMALOCATIONKEYWORD = ":schemaLocation";
@@ -277,7 +278,7 @@ public class MetaCatServlet extends HttpServlet {
      * Initialize the servlet by creating appropriate database connections
      */
     public void init(ServletConfig config) throws ServletException {
-    Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
+    
     	try {
     		if(_firstHalfInitialized) {
     			return;
@@ -332,9 +333,6 @@ public class MetaCatServlet extends HttpServlet {
 	 *            the servlet context of MetaCatServlet
 	 */
 	public void initSecondHalf(ServletContext context) throws ServletException {
-		
-		Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
-
 		try {			
 			ServiceService.registerService("DatabaseService", DatabaseService.getInstance());
 			
@@ -475,15 +473,14 @@ public class MetaCatServlet extends HttpServlet {
 	 * Close all db connections from the pool
 	 */
     public void destroy() {
-    	Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
-    	
-    	ServiceService.stopAllServices();
-    	
-        // Close all db connection
-        logMetacat.warn("MetaCatServlet.destroy - Destroying MetacatServlet");
-        timer.cancel();
-        IndexingQueue.getInstance().setMetacatRunning(false);
-        DBConnectionPool.release();
+        try {
+            ServiceService.stopAllServices();
+            logMetacat.warn("MetaCatServlet.destroy - Destroying MetacatServlet");
+        } finally {
+            timer.cancel();
+            IndexingQueue.getInstance().setMetacatRunning(false);
+            DBConnectionPool.release();
+        }
     }
     
     /** Handle "GET" method requests from HTTP clients */
@@ -506,7 +503,6 @@ public class MetaCatServlet extends HttpServlet {
 	 * Index the paths specified in the metacat.properties
 	 */
     private void checkIndexPaths() {
-    	Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
     	logMetacat.debug("MetaCatServlet.checkIndexPaths - starting....");
     	boolean needCheck = false;
     	try {
@@ -658,8 +654,6 @@ public class MetaCatServlet extends HttpServlet {
 	@SuppressWarnings("unchecked")
 	private void handleGetOrPost(HttpServletRequest request,
 			HttpServletResponse response) throws ServletException, IOException {
-		Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
-
 		String requestEncoding = request.getCharacterEncoding();
 		if (requestEncoding == null) {
 			logMetacat.debug("null requestEncoding, setting to application default: " + DEFAULT_ENCODING);
@@ -755,17 +749,28 @@ public class MetaCatServlet extends HttpServlet {
 					
 					// attempt to redirect to metacatui (#view/{pid}) if not getting the raw XML
 					// see: https://projects.ecoinformatics.org/ecoinfo/issues/6546
-					if (!skin.equals("xml")) {
+					if (skin != null && !skin.equals("xml")) {
 						String uiContext = PropertyService.getProperty("ui.context");
 						String docidNoRev = DocumentUtil.getSmartDocId(docidToRead);
-						int rev = DocumentUtil.getRevisionFromAccessionNumber(docidToRead);
-						String pid = null;
-						try {
-							pid = IdentifierManager.getInstance().getGUID(docidNoRev, rev);
-							response.sendRedirect(SystemUtil.getServerURL() + "/" + uiContext + "/#view/" + pid );
-							return;
-						} catch (McdbDocNotFoundException nfe) {
-							logMetacat.warn("Could not locate PID for docid: " + docidToRead, nfe);
+						if (docidNoRev != null) {
+						    int rev = DocumentUtil.getRevisionFromAccessionNumber(docidToRead);
+	                        String pid = null;
+	                        try {
+	                            pid = IdentifierManager.getInstance().getGUID(docidNoRev, rev);
+	                            response.sendRedirect(SystemUtil.getServerURL() + "/" + uiContext + "/#view/" + pid );
+	                            return;
+	                        } catch (McdbDocNotFoundException nfe) {
+	                            logMetacat.warn("Could not locate PID for docid: " + docidToRead, nfe);
+	                        }
+						} else {
+						    PrintWriter out = response.getWriter();
+                            response.setContentType("text/xml");
+                            out.println("<?xml version=\"1.0\"?>");
+                            out.println("<error>");
+                            out.println("The docid " + docidToRead + " doesn't match the format and doesn't exist.");
+                            out.println("</error>");
+                            out.close();
+                            return;
 						}
 					}
 					
@@ -1235,7 +1240,6 @@ public class MetaCatServlet extends HttpServlet {
 		}
 		
 		public static void initializeSitemapTask(MetacatHandler handler) {
-			Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
 			Boolean sitemap_enabled = false;
 
 			try {

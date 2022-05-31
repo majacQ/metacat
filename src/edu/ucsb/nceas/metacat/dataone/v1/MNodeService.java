@@ -64,6 +64,7 @@ import org.dataone.service.types.v1.SystemMetadata;
 import org.dataone.service.types.v1_1.QueryEngineDescription;
 import org.dataone.service.types.v1_1.QueryEngineList;
 import org.dataone.service.types.v2.TypeFactory;
+import org.dataone.speedbagit.SpeedBagIt;
 
 import edu.ucsb.nceas.metacat.IdentifierManager;
 import edu.ucsb.nceas.metacat.dataone.convert.LogV2toV1Converter;
@@ -83,7 +84,7 @@ public class MNodeService
 	edu.ucsb.nceas.metacat.dataone.MNodeService impl = null;
 	
 	/* the logger instance */
-    private org.apache.commons.logging.Log logMetacat = null;
+    private org.apache.commons.logging.Log logMetacat = LogFactory.getLog(MNodeService.class);
 
     /**
      * Singleton accessor to get an instance of MNodeService.
@@ -98,7 +99,6 @@ public class MNodeService
      * Constructor, private for singleton access
      */
     private MNodeService(HttpServletRequest request) {
-        logMetacat = LogFactory.getLog(MNodeService.class);
         impl = edu.ucsb.nceas.metacat.dataone.MNodeService.getInstance(request);
     }
     

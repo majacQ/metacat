@@ -166,10 +166,6 @@ public class MetacatAdminServlet extends HttpServlet {
 				// process login
 				BackupAdmin.getInstance().configureBackup(request, response);
 				return;
-			} else if (action.equals("geoserver")) {
-				// process geoserver password change
-				GeoserverAdmin.getInstance().configureGeoserver(request, response);
-				return;
 			} else if (action.equals("dataone")) {
 				// process dataone config
 				D1Admin.getInstance().configureDataONE(request, response);
@@ -182,6 +178,10 @@ public class MetacatAdminServlet extends HttpServlet {
                 // process replication config
                 EZIDAdmin.getInstance().configureEZID(request, response);
                 return; 
+			} else if (action.equals("quota")) {
+                // process the quota config
+                QuotaAdmin.getInstance().configureQuota(request, response);
+                return;
 			} else if (action.equals("solrserver")) {
                 // process replication config
                 SolrAdmin.getInstance().configureSolr(request, response);
@@ -263,12 +263,12 @@ public class MetacatAdminServlet extends HttpServlet {
             //request.setAttribute("orgsConfigured", new Boolean(OrganizationUtil.areOrganizationsConfigured()));
             request.setAttribute("skinsConfigured", new Boolean(SkinUtil.areSkinsConfigured()));
             request.setAttribute("metacatConfigured", new Boolean(ConfigurationUtil.isMetacatConfigured()));    
-            request.setAttribute("geoserverConfigured", 
-                    PropertyService.getProperty("configutil.geoserverConfigured"));
             request.setAttribute("dataoneConfigured", 
                     PropertyService.getProperty("configutil.dataoneConfigured"));
             request.setAttribute("ezidConfigured", 
                     PropertyService.getProperty("configutil.ezidConfigured"));
+            request.setAttribute("quotaConfigured", 
+                    PropertyService.getProperty("configutil.quotaConfigured"));
             request.setAttribute("solrserverConfigured", 
                     PropertyService.getProperty("configutil.solrserverConfigured"));
             request.setAttribute("metcatServletInitialized", MetaCatServlet.isFullyInitialized());

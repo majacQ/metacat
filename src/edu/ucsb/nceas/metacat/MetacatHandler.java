@@ -146,10 +146,22 @@ public class MetacatHandler {
     private static final String ERRORCLOSE = "</error>";
     public static final String FGDCDOCTYPE = "metadata";
     
-	private Timer timer;
+	private static Timer timer;
 	
+	/**
+	 * Constructor with a timer object. This constructor will be used in the MetacatServlet class which
+	 * is the only place to handle the site map generation.
+	 * @param timer  the timer used to schedule the site map generation
+	 */
     public MetacatHandler(Timer timer) {
-    	this.timer = timer;
+    	    this.timer = timer;
+    }
+    
+    /**
+     * Default constructor. It will be used in the DataONE API, which doesn't need to handle the timer.
+     */
+    public MetacatHandler() {
+        
     }
     
     
@@ -254,9 +266,7 @@ public class MetacatHandler {
             HttpServletResponse response,
             String username, String[] groupnames,
             String sess_id) throws PropertyNotFoundException, HandlerException {
-        
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
-        
+
         if ( !PropertyService.getProperty("spatial.runSpatialOption").equals("true") ) {
             response.setContentType("text/html");
             try {
@@ -339,7 +349,6 @@ public class MetacatHandler {
      */
     public void handleLoginAction(Writer out, Hashtable<String, String[]> params,
             HttpServletRequest request, HttpServletResponse response) throws IOException {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         AuthSession sess = null;
         
         if(params.get("username") == null){
@@ -436,7 +445,6 @@ public class MetacatHandler {
      */
     public void handleLogoutAction(Writer out, Hashtable<String, String[]> params,
             HttpServletRequest request, HttpServletResponse response) throws IOException {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         String qformat = "xml";
         if(params.get("qformat") != null){
             qformat = params.get("qformat")[0];
@@ -497,7 +505,6 @@ public class MetacatHandler {
     protected void handleSQuery(Writer out, Hashtable<String, String[]> params,
             HttpServletResponse response, String user, String[] groups,
             String sessionid) throws PropertyNotFoundException {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         long squeryWarnLimit = Long.parseLong(PropertyService.getProperty("database.squeryTimeWarnLimit"));
         
         long startTime = System.currentTimeMillis();
@@ -527,7 +534,6 @@ public class MetacatHandler {
     protected void handleQuery(Writer out, Hashtable<String, String[]> params,
             HttpServletResponse response, String user, String[] groups,
             String sessionid) throws PropertyNotFoundException, UnsupportedEncodingException, IOException {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         long queryWarnLimit = Long.parseLong(PropertyService.getProperty("database.queryTimeWarnLimit"));
         
         //create the query and run it
@@ -563,7 +569,6 @@ public class MetacatHandler {
     protected void handleExportAction(Hashtable<String, String[]> params,
             HttpServletResponse response,
             String user, String[] groups, String passWord) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         // Output stream
         ServletOutputStream out = null;
         // Zip output stream
@@ -659,7 +664,6 @@ public class MetacatHandler {
     protected void handleReadInlineDataAction(Hashtable<String, String[]> params,
             HttpServletRequest request, HttpServletResponse response,
             String user, String passWord, String[] groups) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         String[] docs = new String[10];
         String inlineDataId = null;
         String docId = "";
@@ -763,7 +767,6 @@ public class MetacatHandler {
     public void handleReadAction(Hashtable<String, String[]> params, HttpServletRequest request,
             HttpServletResponse response, String user, String passWord,
             String[] groups) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         ServletOutputStream out = null;
         ZipOutputStream zout = null;
         PrintWriter pw = null;
@@ -1006,12 +1009,28 @@ public class MetacatHandler {
     }
     
     /**
+     * Read a document from metacat and return the InputStream. The dataType will be null.
+     * @param docid - the metacat docid to read
+     * @return the document as an input stream
+     * @throws PropertyNotFoundException
+     * @throws ClassNotFoundException
+     * @throws ParseLSIDException
+     * @throws McdbException
+     * @throws SQLException
+     * @throws IOException
+     */
+    public static InputStream read(String docid) throws PropertyNotFoundException, ClassNotFoundException, 
+                               ParseLSIDException, McdbException, SQLException, IOException {
+        String dataType = null;
+        return read(docid, dataType);
+    }
+    
+    /**
      * Read a document from metacat and return the InputStream.  The XML or
      * data document should be on disk, but if not, read from the metacat database.
      * 
      * @param  docid - the metacat docid to read
-     * @param  username - the DN of the principal attempting the read
-     * @param  groups - the list of groups the DN belongs to as a String array
+     * @param dataType - the type of the object associated with docid
      * @return objectStream - the document as an InputStream
      * @throws InsufficientKarmaException
      * @throws ParseLSIDException
@@ -1021,10 +1040,10 @@ public class MetacatHandler {
      * @throws ClassNotFoundException
      * @throws IOException
      */
-	public static InputStream read(String docid) throws ParseLSIDException,
+	public static InputStream read(String docid, String dataType) throws ParseLSIDException,
 			PropertyNotFoundException, McdbException, SQLException,
 			ClassNotFoundException, IOException {
-		logMetacat.debug("MetacatHandler.read() called.");
+		logMetacat.debug("MetacatHandler.read() called and the data type is " + dataType);
 
 		InputStream inputStream = null;
 
@@ -1038,48 +1057,54 @@ public class MetacatHandler {
 				throw ple;
 			}
 		}
-
-		// accomodate old clients that send docids without revision numbers
-		docid = DocumentUtil.appendRev(docid);
-		DocumentImpl doc = new DocumentImpl(docid, false);
-
-		// deal with data or metadata cases
-		if (doc.getRootNodeID() == 0) {
-
-			// this is a data file
-			// get the path to the file to read
-			try {
-				String filepath = PropertyService.getProperty("application.datafilepath");
-				// ensure it is a directory path
-				if (!(filepath.endsWith("/"))) {
-					filepath += "/";
-				}
-				String filename = filepath + docid;
-				inputStream = readFromFilesystem(filename);
-			} catch (PropertyNotFoundException pnf) {
-				logMetacat.debug("There was a problem finding the "
-						+ "application.datafilepath property. The error "
-						+ "message was: " + pnf.getMessage());
-				throw pnf;
-			} // end try()
-
+		
+        if (dataType != null && dataType.equalsIgnoreCase(D1NodeService.METADATA)) {
+            logMetacat.debug("MetacatHandler.read - the data type is specified as the meta data");
+            String filepath = PropertyService.getProperty("application.documentfilepath");
+            // ensure it is a directory path
+            if (!(filepath.endsWith("/"))) {
+                filepath += "/";
+            }
+            String filename = filepath + docid;
+            inputStream = readFromFilesystem(filename);
 		} else {
-			// this is an metadata document
-			// Get the xml (will try disk then DB)
-			try {
-				// force the InputStream to be returned
-				OutputStream nout = null;
-				inputStream = doc.toXml(nout, null, null, true);
-			} catch (McdbException e) {
-				// report the error
-				logMetacat.error(
-						"MetacatHandler.readFromMetacat() "
-								+ "- could not read document " + docid + ": "
-								+ e.getMessage(), e);
-			}
-
+		 // accomodate old clients that send docids without revision numbers
+	        docid = DocumentUtil.appendRev(docid);
+	        DocumentImpl doc = new DocumentImpl(docid, false);
+		    // deal with data or metadata cases
+	        if (doc.getRootNodeID() == 0) {
+	            // this is a data file
+	            // get the path to the file to read
+	            try {
+	                String filepath = PropertyService.getProperty("application.datafilepath");
+	                // ensure it is a directory path
+	                if (!(filepath.endsWith("/"))) {
+	                    filepath += "/";
+	                }
+	                String filename = filepath + docid;
+	                inputStream = readFromFilesystem(filename);
+	            } catch (PropertyNotFoundException pnf) {
+	                logMetacat.debug("There was a problem finding the "
+	                        + "application.datafilepath property. The error "
+	                        + "message was: " + pnf.getMessage());
+	                throw pnf;
+	            } // end try()
+	        } else {
+	            // this is an metadata document
+	            // Get the xml (will try disk then DB)
+	            try {
+	                // force the InputStream to be returned
+	                OutputStream nout = null;
+	                inputStream = doc.toXml(nout, null, null, true);
+	            } catch (McdbException e) {
+	                // report the error
+	                logMetacat.error(
+	                        "MetacatHandler.readFromMetacat() "
+	                                + "- could not read document " + docid + ": "
+	                                + e.getMessage(), e);
+	            }
+	        }
 		}
-
 		return inputStream;
 	}
     
@@ -1226,7 +1251,6 @@ public class MetacatHandler {
             IOException, SQLException, McdbException, PropertyNotFoundException, 
             ParseLSIDException, InsufficientKarmaException {
         
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         try {
             
             if (docid.startsWith("urn:")) {
@@ -1580,7 +1604,6 @@ public class MetacatHandler {
     public String handleInsertOrUpdateAction(String ipAddress, String userAgent,
             HttpServletResponse response, PrintWriter out, Hashtable<String, String[]> params,
             String user, String[] groups, boolean generateSystemMetadata, boolean writeAccessRules, byte[] xmlBytes, String formatId, Checksum checksum, File objectFile) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         DBConnection dbConn = null;
         int serialNumber = -1;
         String output = "";
@@ -1812,7 +1835,6 @@ public class MetacatHandler {
                 	//IdentifierManager.getInstance().updateSystemMetadata(sysMeta);
                   
                 } catch ( McdbDocNotFoundException mnfe) {
-                  
                   // handle inserts
                   try {
                    // create the system metadata. During the creatation, the data file in the eml may need to be reindexed.
@@ -1831,7 +1853,14 @@ public class MetacatHandler {
         			potentialOreIdentifier.setValue(SystemMetadataFactory.RESOURCE_MAP_PREFIX + sysMeta.getIdentifier().getValue());
         			SystemMetadata oreSystemMetadata = HazelcastService.getInstance().getSystemMetadataMap().get(potentialOreIdentifier);
         			if (oreSystemMetadata != null) {
-                        MetacatSolrIndex.getInstance().submit(oreSystemMetadata.getIdentifier(), oreSystemMetadata, null, true);
+                        MetacatSolrIndex.getInstance().submit(oreSystemMetadata.getIdentifier(), oreSystemMetadata, null, false);
+                        if (oreSystemMetadata.getObsoletes() != null) {
+                            logMetacat.debug("MetacatHandler.handleInsertOrUpdateAction - submit the index task to reindex the obsoleted resource map " + 
+                                              oreSystemMetadata.getObsoletes().getValue());
+                            boolean isSysmetaChangeOnly = true;
+                            SystemMetadata obsoletedOresysmeta = HazelcastService.getInstance().getSystemMetadataMap().get(oreSystemMetadata.getObsoletes());
+                            MetacatSolrIndex.getInstance().submit(oreSystemMetadata.getObsoletes(), obsoletedOresysmeta, isSysmetaChangeOnly, null, true);
+                        }
         			}
                     
                   } catch ( McdbDocNotFoundException dnfe ) {
@@ -1923,7 +1952,6 @@ public class MetacatHandler {
      */
     private static boolean needDTDValidation(StringReader xmlreader)
     throws IOException {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         StringBuffer cbuff = new StringBuffer();
         java.util.Stack<String> st = new java.util.Stack<String>();
         boolean validate = false;
@@ -1991,7 +2019,6 @@ public class MetacatHandler {
       HttpServletRequest request, HttpServletResponse response,
       String user, String[] groups) {
       
-      Log logMetacat = LogFactory.getLog(MetacatHandler.class);
       String[] docid = params.get("docid");
       
       if(docid == null){
@@ -2208,8 +2235,6 @@ public class MetacatHandler {
     protected void handleGetAccessControlAction(PrintWriter out,
             Hashtable<String,String[]> params, HttpServletResponse response, String username,
             String[] groupnames) {
-        
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
 
         String docid = params.get("docid")[0];
         if (docid.startsWith("urn:")) {
@@ -2423,7 +2448,6 @@ public class MetacatHandler {
     protected void handleGetLogAction(Hashtable<String, String[]> params, 
     		HttpServletRequest request, HttpServletResponse response, 
     		String username, String[] groups, String sessionId) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         try {
         	// figure out the output as part of the action
             PrintWriter out = null;
@@ -2549,8 +2573,7 @@ public class MetacatHandler {
     protected void handleBuildIndexAction(Hashtable<String, String[]> params,
             HttpServletRequest request, HttpServletResponse response,
             String username, String[] groups) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
-        
+
         // Get all of the parameters in the correct formats
         String[] docid = params.get("docid");
         
@@ -2632,7 +2655,6 @@ public class MetacatHandler {
     protected void handleReindexAction(Hashtable<String, String[]> params,
             HttpServletRequest request, HttpServletResponse response,
             String username, String[] groups) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         
         // Get all of the parameters in the correct formats
         String[] pid = params.get("pid");
@@ -2753,7 +2775,6 @@ public class MetacatHandler {
     protected void handleReindexAllAction(Hashtable<String, String[]> params,
             HttpServletRequest request, HttpServletResponse response,
             String username, String[] groups) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         
       
         
@@ -2952,7 +2973,6 @@ public class MetacatHandler {
      */
     protected void handleMultipartForm(HttpServletRequest request,
             HttpServletResponse response) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         PrintWriter out = null;
         String action = null;
         File tempFile = null;
@@ -3143,7 +3163,7 @@ public class MetacatHandler {
             PrintWriter out, Hashtable<String,String[]> params, Hashtable<String,String> fileList,
             String username, String[] groupnames)
     {
-      Log logMetacat = LogFactory.getLog(MetacatHandler.class);
+
       String action = null;
       String docid = null;
       String qformat = null;
@@ -3329,10 +3349,7 @@ public class MetacatHandler {
             PrintWriter out, Hashtable<String, String[]> params, 
             Hashtable<String,String> fileList, String username, String[] groupnames, 
             HttpServletResponse response) {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
-        //PrintWriter out = null;
-        //Connection conn = null;
-        //        String action = null;
+        
         String docid = null;
         String qformat = null;
         String output = "";
@@ -3849,7 +3866,6 @@ public class MetacatHandler {
      * @ returns the array of identifiers
      */
     private Vector<String> getDocumentList() throws SQLException {
-        Log logMetacat = LogFactory.getLog(MetacatHandler.class);
         Vector<String> docList = new Vector<String>();
         PreparedStatement pstmt = null;
         ResultSet rs = null;

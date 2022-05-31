@@ -1,6 +1,6 @@
 # Metacat: Data Preservation and Discovery System
 
-Version: 2.13.0 Release
+Version: 2.18.0 Release
 
 Send feedback and bugs to: metacat-dev@ecoinformatics.org
                            http://github.com/NCEAS/metacat
@@ -66,8 +66,91 @@ list of currently unimplemented issues that we are working on
 for the next release.
 
 ## Release Notes
+### Release Notes for 2.18.0
+This release focuses on improving indexing performance.
+New features and bugs fixed in this release:
+* Use a multiple-tread process to index objects
+* Eliminate unnecessary index tasks
+* Fix bugs in Bagit implementation
 
-### Rlease Notes for 2.13.0
+### Release Notes for 2.17.0
+New features and bugs fixed in this release:
+* Support the OSTI DOI service
+* Support hierarchical packages in getPackage API
+* Use the file protocol rather than the https/http protocols to access schema files during the xml validation process
+* Metacat threw the error of the user not authorized during the publish process even though the EZID setting is correct
+* Metacat did not check if the checksum algorithm was changed in the MN.updateSystemmetadata method
+* EML to HTML .xslt skips methods section in attributes
+* Upgrade xerces to 2.12.2
+* Remove the GeoServer war file
+* Remove the oa4mp-client-oauth1-3.3.war file
+
+### Release Notes for 2.16.2
+Bugs fixed in this release:
+* Upgrade some library jar files to fix severe security vulnerabilities
+
+### Release Notes for 2.16.1
+Bugs fixed in this release:
+* Upgrade some library jar files to fix severe security vulnerabilities
+* Metacat cannot create objects without DOI setting enabled
+
+### Release Notes for 2.16.0
+New features and bugs fixed in this release:
+* Upgrade some library jar files to fix critical security vulnerabilities
+* Refactor the DOI service to use the plug-in architecture
+* CN subjects cannot query private objects
+* Users with the write permission cannot update system metadata
+* Metacat should return a not-found error rather than the internal error when there is a typo in the old Metacat API url 
+
+### Release Notes for 2.15.1
+New features and bugs fixed in this release:
+* Metacat hangs with excessive thread counts
+* Support multiple DOI shoulders
+* Update EML Semantic Annotation indexing to include and expand property URIs
+* MNodeService.getPackage() takes too long for large packages
+* Geohashes, text fields not being indexed for schema.org documents
+* Expand elements covered by EML's attribute index fields beyond just dataTable
+* EML to HTML/PDF is broken in the getPackage() method
+* Have MNCore.getCapabilities() report on auth.allowSubmitters parameter setting
+* GetPackage API doesn't work from R on Windows 
+* Add new indexes for column archvied and object_format in the systemmetadata table
+
+### Release Notes for 2.15.0
+New features and bugs fixed in this release:
+* Support non-XML metadata objects in Metacat
+* Upgrade Solr to 8.8.2
+* Enforce the node replication policy in the MN.replicate method
+* Fix the bug of incorrect geohash
+* Fix the bug of incorrect collectionQuery
+* Change the default order to dateModified for the listObject method
+* Remove extra logged event in the MN.update method 
+* Upgrade some library jar files to fix security threats
+
+### Release Notes for 2.14.1
+New features and bugs fixed in this release:
+* Support new XML schemas for collections-1.1.0 and portals-1.1.0
+* Metacat is creating too many Timer objects which leads to out of memory issues 
+  and excessive numbers of threads under high request loads
+* Users with only write permission can change the access policy on update() requests, 
+  when this operation is reserved only for users with changePermission permission
+* Close OutputStream objects after fulfilling DataONE API requests
+* Fix how exclude filters are translated in the collectionQuery
+* Update Apache setup docs to match current practices
+* Update documentation build to Python3
+* Fix an issue where a client editor sees a "Nothing was found" error despite 
+  having all permissions
+* Project abstract displays oddly
+* View service rendering EML project abstract incorrectly
+* Add Methods section heading to metadata view
+
+### Release Notes for 2.14.0
+New features and bugs fixed in this release:
+* Support the quota service for portals
+* Upgrade the namespace of the datacite schema to 4.3
+* Upgrade the version of log4j from 1.2 to 2.11
+* Upgrade some library jar files to fix security threats
+
+### Release Notes for 2.13.0
 New features in this release:
 * Upgrade Solr to version 8 and use the external Solr server
 * Use the streaming HTTP multipart handler to improve performance

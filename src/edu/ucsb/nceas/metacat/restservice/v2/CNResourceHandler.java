@@ -618,11 +618,18 @@ public class CNResourceHandler extends D1ResourceHandler {
         response.setContentType(mimeType);
         response.setHeader("Content-Disposition", "inline; filename=" + filename);
 
-        InputStream data = CNodeService.getInstance(request).get(session, id);
-
-        OutputStream out = response.getOutputStream();
-        response.setStatus(200);
-        IOUtils.copyLarge(data, out);
+        InputStream data = null;
+        try {
+            data = CNodeService.getInstance(request).get(session, id);
+            OutputStream out = response.getOutputStream();
+            response.setStatus(200);
+            IOUtils.copyLarge(data, out);
+        } finally {
+            if (data != null) {
+                IOUtils.closeQuietly(data);
+            }
+        }
+        
 
     }
 
@@ -1873,16 +1880,22 @@ public class CNResourceHandler extends D1ResourceHandler {
             if (pid != null) {
                 Identifier identifier = new Identifier();
                 identifier.setValue(pid);
-                InputStream stream = cnode.view(session, format, identifier);
-
-                // set the content-type if we have it from the implementation
-                if (stream instanceof ContentTypeInputStream) {
-                    response.setContentType(((ContentTypeInputStream) stream).getContentType());
+                InputStream stream = null;
+                try {
+                    stream = cnode.view(session, format, identifier);
+                    // set the content-type if we have it from the implementation
+                    if (stream instanceof ContentTypeInputStream) {
+                        response.setContentType(((ContentTypeInputStream) stream).getContentType());
+                    }
+                    response.setStatus(200);
+                    out = response.getOutputStream();
+                    // write the results to the output stream
+                    IOUtils.copyLarge(stream, out);
+                } finally {
+                    if (stream != null) {
+                        IOUtils.closeQuietly(stream);
+                    }
                 }
-                response.setStatus(200);
-                out = response.getOutputStream();
-                // write the results to the output stream
-                IOUtils.copyLarge(stream, out);
                 return;
             } else {
                 // TODO: list the registered views

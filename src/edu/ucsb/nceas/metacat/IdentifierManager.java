@@ -711,6 +711,36 @@ public class IdentifierManager {
         return guids;
     }
     
+    /**
+     * Get all pids in the series chain
+     * @param sid  the id of the series chain
+     * @return  a list of pid in the chain
+     * @throws SQLException
+     */
+    public List<String> getAllPidsInChain(String sid) throws SQLException {
+        Vector<String> guids = new Vector<String>();
+        String sql = "select guid from systemmetadata where series_id=?";
+        DBConnection dbConn = null;
+        int serialNumber = -1;
+        try {
+            // Get a database connection from the pool
+            dbConn = DBConnectionPool.getDBConnection("IdentifierManager.getAllPidsInChain");
+            serialNumber = dbConn.getCheckOutSerialNumber();
+            // Execute the insert statement
+            PreparedStatement stmt = dbConn.prepareStatement(sql);
+            stmt.setString(1, sid);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                String guid = rs.getString(1);
+                guids.add(guid);
+            } 
+            stmt.close();
+        } finally {
+            // Return database connection to the pool
+            DBConnectionPool.returnDBConnection(dbConn, serialNumber);
+        }
+        return guids;
+    }
     
     
     /**
@@ -2011,7 +2041,7 @@ public class IdentifierManager {
             serialNumber = dbConn.getCheckOutSerialNumber();
 
             // the field query
-            String orderBySql = " order by guid ";
+            String orderBySql = " order by date_modified DESC ";
             String fieldQuery = fieldSql + whereClauseSql + orderBySql;
             String finalQuery = DatabaseService.getInstance().getDBAdapter().getPagedQuery(fieldQuery, start, count);
             fieldStmt = dbConn.prepareStatement(finalQuery);
@@ -2606,4 +2636,3 @@ public class IdentifierManager {
         return exists;
     }
 }
-
