@@ -941,11 +941,17 @@ sub getLdapEntry {
     $ldap = Net::LDAP->new($ldapurl, timeout => $timeout) or handleLDAPBindFailure($ldapurl);
     
     if ($ldap) {
+  <<<<<<< METACAT_IDENTITY_2_3_0_UPDATE_1_BRANCH
+        $ldap->start_tls( verify => 'none');
+        #$ldap->start_tls( verify => 'require',
+        #              cafile => $ldapServerCACertFile);
+  =======
         if($useStartTLS eq 'true') {
              $ldap->start_tls( verify => 'none');
              #$ldap->start_tls( verify => 'require',
              #              cafile => $ldapServerCACertFile);
         }
+  >>>>>>> main
     	my $bindresult = $ldap->bind;
     	if ($bindresult->code) {
         	return $entry;
@@ -1065,11 +1071,17 @@ sub uidExists {
     debug("uidExists: connecting to $ldapurl, $timeout");
     $ldap = Net::LDAP->new($ldapurl, timeout => $timeout) or handleLDAPBindFailure($ldapurl);
     if ($ldap) {
+  <<<<<<< METACAT_IDENTITY_2_3_0_UPDATE_1_BRANCH
+        $ldap->start_tls( verify => 'none');
+        #$ldap->start_tls( verify => 'require',
+        #              cafile => $ldapServerCACertFile);
+  =======
         if($useStartTLS eq 'true') {
             $ldap->start_tls( verify => 'none');
             #$ldap->start_tls( verify => 'require',
             #              cafile => $ldapServerCACertFile);
         }
+  >>>>>>> main
         $ldap->bind( version => 3, anonymous => 1);
         $mesg = $ldap->search (
             base   => $base,
@@ -1106,11 +1118,17 @@ sub findExistingAccounts {
     debug("findExistingAccounts: connecting to $ldapurl, $timeout");
     $ldap = Net::LDAP->new($ldapurl, timeout => $timeout) or handleLDAPBindFailure($ldapurl);
     if ($ldap) {
+  <<<<<<< METACAT_IDENTITY_2_3_0_UPDATE_1_BRANCH
+    	$ldap->start_tls( verify => 'none');
+    	#$ldap->start_tls( verify => 'require',
+        #              cafile => $ldapServerCACertFile);
+  =======
         if($useStartTLS eq 'true') {
                 $ldap->start_tls( verify => 'none');
                 #$ldap->start_tls( verify => 'require',
                 #              cafile => $ldapServerCACertFile);
         }
+  >>>>>>> main
     	$ldap->bind( version => 3, anonymous => 1);
 		$mesg = $ldap->search (
 			base   => $base,
@@ -1744,8 +1762,12 @@ sub getNextUidNumber {
     
     if ($ldap) {
     	my $existingHighUid=getExistingHighestUidNum($ldapUsername, $ldapPassword);
+  <<<<<<< METACAT_IDENTITY_2_3_0_UPDATE_1_BRANCH
+        $ldap->start_tls( verify => 'require',
+  =======
     	   if($useStartTLS eq 'true') {
     	        $ldap->start_tls( verify => 'require',
+  >>>>>>> main
                       cafile => $ldapServerCACertFile);
     	   }
         my $bindresult = $ldap->bind( version => 3, dn => $ldapUsername, password => $ldapPassword);
@@ -1806,10 +1828,15 @@ sub getExistingHighestUidNum {
     #if main ldap server is down, a html file containing warning message will be returned
     $ldap = Net::LDAP->new($ldapurl, timeout => $timeout) or handleLDAPBindFailure($ldapurl);
     if ($ldap) {
+  <<<<<<< METACAT_IDENTITY_2_3_0_UPDATE_1_BRANCH
+        $ldap->start_tls( verify => 'require',
+                      cafile => $ldapServerCACertFile);
+  =======
         if($useStartTLS eq 'true') {
             $ldap->start_tls( verify => 'require',
                       cafile => $ldapServerCACertFile);
         }
+  >>>>>>> main
         my $bindresult = $ldap->bind( version => 3, dn => $ldapUsername, password => $ldapPassword);
         my $mesg = $ldap->search(base  => $dn_store_next_uid, filter => '(objectClass=*)');
          if ($mesg->count() > 0) {
