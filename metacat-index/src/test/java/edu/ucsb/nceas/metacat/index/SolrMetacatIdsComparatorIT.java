@@ -5,14 +5,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.solr.client.solrj.SolrServer;
+import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.servlet.SolrRequestParsers;
 import org.dataone.cn.indexer.solrhttp.SolrDoc;
-import org.dataone.cn.indexer.solrhttp.SolrElementField;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import edu.ucsb.nceas.metacat.common.SolrServerFactory;
@@ -45,6 +45,7 @@ public class SolrMetacatIdsComparatorIT {
      * Figure out ids which have been indexed.
      */
     @Test
+    @Ignore
     public void figureIdsNotIndexed() throws Exception {
         metacatIdsFile = new File( metacatIDFileName);
         notInSolrFile = new File(NOTINSOLR);
@@ -73,6 +74,7 @@ public class SolrMetacatIdsComparatorIT {
      * Figure out ids which have been indexed.
      */
     @Test
+    @Ignore
     public void getNumberOfIdsInSolr() throws Exception {
         numberOfIdsFile = new File(NUMBEROFIDS);
         if(numberOfIdsFile.exists()) {
@@ -81,7 +83,7 @@ public class SolrMetacatIdsComparatorIT {
         numberOfIdsFile.createNewFile();
         String query = "q=*:*";
         SolrParams solrParams = SolrRequestParsers.parseQueryString(query);
-        SolrServer solrServer = SolrServerFactory.createSolrServer();
+        SolrClient solrServer = SolrServerFactory.createSolrServer();
         QueryResponse response = solrServer.query(solrParams);
         SolrDocumentList list = response.getResults();
         long number = list.getNumFound();

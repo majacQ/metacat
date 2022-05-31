@@ -42,7 +42,8 @@ import java.net.MalformedURLException;
 import java.util.Enumeration;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.metacat.database.DBConnection;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
@@ -57,7 +58,7 @@ import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 public class DBUtil {
 
   //private Connection	conn = null;
-  private static Logger logMetacat = Logger.getLogger(DBUtil.class);
+  private static Log logMetacat = LogFactory.getLog(DBUtil.class);
   private static final int MAXMUM = -2;
   public static final int NONEEXIST = -1;
 
@@ -195,7 +196,7 @@ public class DBUtil {
         systemID = rs.getString(1);
         // system id may not have server url on front.  Add it if not.
         if (!systemID.startsWith("http://")) {
-        	systemID = SystemUtil.getContextURL() + systemID;
+        	systemID = SystemUtil.getInternalContextURL() + systemID;
         }
       } else {
         throw new SQLException("DBUtil.readDTDSchema - Non-registered doctype: " + doctype);

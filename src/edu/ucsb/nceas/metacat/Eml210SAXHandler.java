@@ -42,7 +42,8 @@ import java.util.Hashtable;
 import java.util.Stack;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
 
@@ -118,10 +119,13 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 	private Writer inlineDataFileWriter = null;
 
 	private String inlineDataFileName = null;
+	
+	private String identifier = null;
 
 	DistributionSection currentDistributionSection = null;
 
 	Vector<DistributionSection> allDistributionSections = new Vector<DistributionSection>();
+    private Vector<String> guidsToSync;
 
 	// This variable keeps a counter of each distribution element. This index
 	// will be used to name the inline data file that gets written to disk, and to
@@ -156,7 +160,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 	// + "when they don't have write permission!";
 
 	private static final String UPDATEACCESSERROR = "User tried to update an "
-			+ "access module when they don't have \"ALL\" permission!";
+			+ "access module when they don't have \"ALL\" permission on the object ";
 
 	private static final String TOPLEVEL = "top";
 
@@ -164,7 +168,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 
 	private static final String RELATION = "Provides info for";
 
-	private Logger logMetacat = Logger.getLogger(Eml210SAXHandler.class);
+	private Log logMetacat = LogFactory.getLog(Eml210SAXHandler.class);
 
 	/**
 	 * Construct an instance of the handler class In this constructor, user can
@@ -191,9 +195,11 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 	 */
 	public Eml210SAXHandler(DBConnection conn, String action, String docid,
 			String revision, String user, String[] groups, String pub, int serverCode,
-			Date createDate, Date updateDate, boolean writeAccessRules) throws SAXException {
+			Date createDate, Date updateDate, boolean writeAccessRules, Vector<String> guidsToSync) throws SAXException {
 		super(conn, action, docid, revision, user, groups, pub, serverCode, createDate,
 				updateDate, writeAccessRules);
+		logMetacat.info("the write access rule flag is"+writeAccessRules);
+		this.guidsToSync = guidsToSync;
 		// Get the unchangeable subtrees (user doesn't have write permission)
 		try {
 
@@ -206,7 +212,8 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 				
 				PermissionController control = new PermissionController(previousDocid );
 				if (!control.hasPermission(user, groups, AccessControlInterface.ALLSTRING)
-						&& action != null) {
+						&& !control.hasPermission(user, groups, AccessControlInterface.CHMODSTRING)
+						&& action != null && writeAccessRules) {
 					needToCheckAccessModule = true;
 					unChangeableAccessSubTreeVector = getAccessSubTreeListFromDB();
 				}
@@ -215,6 +222,12 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 		} catch (Exception e) {
 			throw new SAXException(e.getMessage());
 		}
+		 try {
+	            identifier = IdentifierManager.getInstance().getGUID(docid, Integer.valueOf(revision));
+	        } catch (Exception e) {
+	            identifier = docid+"."+revision;
+	            logMetacat.warn("Eml210SAXHandler.Eml210SAXHandler - we can't get object identifier for metacat id "+identifier);
+	        }
 	}
 
 	/*
@@ -283,9 +296,9 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 		// for element <eml:eml...> qname is "eml:eml", local name is "eml"
 		// for element <acl....> both qname and local name is "eml"
 		// uri is namesapce
-		logMetacat.debug("Start ELEMENT(qName) " + qName);
-		logMetacat.debug("Start ELEMENT(localName) " + localName);
-		logMetacat.debug("Start ELEMENT(uri) " + uri);
+		logMetacat.trace("Start ELEMENT(qName) " + qName);
+		logMetacat.trace("Start ELEMENT(localName) " + localName);
+		logMetacat.trace("Start ELEMENT(uri) " + uri);
 
 		DBSAXNode parentNode = null;
 		DBSAXNode currentNode = null;
@@ -467,9 +480,9 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 				// in catalog table it will be registered.
 				if (attributeName != null
 						&& attributeName.indexOf(MetaCatServlet.SCHEMALOCATIONKEYWORD) != -1) {
-					SchemaLocationResolver resolver = new SchemaLocationResolver(
+					/*SchemaLocationResolver resolver = new SchemaLocationResolver(
 							attributeValue);
-					resolver.resolveNameSpace();
+					resolver.resolveNameSpace();*/
 
 				} else if (attributeName != null && attributeName.equals(ID)) {
 
@@ -552,7 +565,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			if (processingTopLevelAccess && needToCheckAccessModule) {
 				compareElementNameSpaceAttributes(
 						currentUnchangeableAccessModuleNodeStack, namespaces, atts,
-						localName, UPDATEACCESSERROR);
+						localName, UPDATEACCESSERROR+identifier);
 
 			}
 
@@ -613,7 +626,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			inlineDataNameSpace = null;
 			inlineDataNameSpace = new Hashtable<String, String>();
 			// write inline data into file
-			logMetacat.debug("the inline element data is: " + inlineElements.toString());
+			logMetacat.trace("the inline element data is: " + inlineElements.toString());
 			writeInlineDataIntoFile(inlineDataFileWriter, inlineElements);
 		}// else
 
@@ -746,13 +759,13 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 					"\t access node data from db:       " + dbAccessData + "\n" +
 					"\t access node data from document: " + docAccessData);
 			
-			throw new SAXException(UPDATEACCESSERROR + " [Eml210SAXHandler.compareAccessTextNode]");
+			throw new SAXException(UPDATEACCESSERROR +identifier+ " [Eml210SAXHandler.compareAccessTextNode]");
 		}// if
 	}
 
 	/** SAX Handler that is called for each XML text node */
 	public void characters(char[] cbuf, int start, int len) throws SAXException {
-		logMetacat.debug("CHARACTERS");
+		logMetacat.trace("CHARACTERS");
 		if (!handleInlineData) {
 			// buffer all text nodes for same element. This is for if text was
 			// split into different nodes
@@ -762,7 +775,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			// if text buffer .size is greater than max, write it to db.
 			// so we can save memory
 			if (textBuffer.length() > MAXDATACHARS) {
-				logMetacat.debug("Write text into DB in charaters"
+				logMetacat.trace("Write text into DB in charaters"
 						+ " when text buffer size is greater than maxmum number");
 				DBSAXNode currentNode = (DBSAXNode) nodeStack.peek();
 				endNodeId = writeTextForDBSAXNode(endNodeId, textBuffer, currentNode);
@@ -774,7 +787,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			// we don't need to buffer it.
 			StringBuffer inlineText = new StringBuffer();
 			inlineText.append(new String(cbuf, start, len));
-			logMetacat.debug("The inline text data write into file system: "
+			logMetacat.trace("The inline text data write into file system: "
 					+ inlineText.toString());
 			writeInlineDataIntoFile(inlineDataFileWriter, inlineText);
 		}
@@ -783,12 +796,12 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 	/** SAX Handler that is called at the end of each XML element */
 	public void endElement(String uri, String localName, String qName)
 			throws SAXException {
-		logMetacat.debug("End ELEMENT " + qName);
+		logMetacat.trace("End ELEMENT " + qName);
 
 		if (localName.equals(INLINE) && handleInlineData) {
 			// Get the node from the stack
 			DBSAXNode currentNode = (DBSAXNode) nodeStack.pop();
-			logMetacat.debug("End of inline data");
+			logMetacat.trace("End of inline data");
 			// close file writer
 			try {
 				inlineDataFileWriter.close();
@@ -860,7 +873,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 				}// else if
 				
 				// write text to db if it is not inline data
-				logMetacat.debug("Write text into DB in End Element");
+				logMetacat.trace("Write text into DB in End Element");
 
 				// compare top level access module
 				if (processingTopLevelAccess && needToCheckAccessModule) {
@@ -970,7 +983,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 
 					logMetacat.error("Access node stack is not empty after "
 							+ "parsing access subtree");
-					throw new SAXException(UPDATEACCESSERROR);
+					throw new SAXException(UPDATEACCESSERROR+identifier);
 
 				}
 				// reset access section object
@@ -1018,7 +1031,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			endElement.append("</");
 			endElement.append(qName);
 			endElement.append(">");
-			logMetacat.debug("inline endElement: " + endElement.toString());
+			logMetacat.trace("inline endElement: " + endElement.toString());
 			writeInlineDataIntoFile(inlineDataFileWriter, endElement);
 		}
 	}
@@ -1027,7 +1040,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 	 * SAX Handler that receives notification of comments in the DTD
 	 */
 	public void comment(char[] ch, int start, int length) throws SAXException {
-		logMetacat.debug("COMMENT");
+		logMetacat.trace("COMMENT");
 		if (!handleInlineData) {
 			if (!processingDTD) {
 				DBSAXNode currentNode = (DBSAXNode) nodeStack.peek();
@@ -1036,7 +1049,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 				// compare top level access module
 				if (processingTopLevelAccess && needToCheckAccessModule) {
 					compareCommentNode(currentUnchangeableAccessModuleNodeStack, str,
-							UPDATEACCESSERROR);
+							UPDATEACCESSERROR+identifier);
 				}
 				endNodeId = currentNode.writeChildNodeToDB("COMMENT", null, str, docid);
 				if (needToCheckAccessModule
@@ -1054,7 +1067,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			inlineComment.append("<!--");
 			inlineComment.append(new String(ch, start, length));
 			inlineComment.append("-->");
-			logMetacat.debug("inline data comment: " + inlineComment.toString());
+			logMetacat.trace("inline data comment: " + inlineComment.toString());
 			writeInlineDataIntoFile(inlineDataFileWriter, inlineComment);
 		}
 	}
@@ -1069,11 +1082,11 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			logMetacat.error("the stack is empty for comment data");
 			throw new SAXException(error);
 		}
-		logMetacat.debug("current node type from xml is COMMENT");
-		logMetacat.debug("node type from stack: " + node.getNodeType());
-		logMetacat.debug("current node data from xml is: " + string);
-		logMetacat.debug("node data from stack: " + node.getNodeData());
-		logMetacat.debug("node is from stack: " + node.getNodeId());
+		logMetacat.trace("current node type from xml is COMMENT");
+		logMetacat.trace("node type from stack: " + node.getNodeType());
+		logMetacat.trace("current node data from xml is: " + string);
+		logMetacat.trace("node data from stack: " + node.getNodeData());
+		logMetacat.trace("node is from stack: " + node.getNodeId());
 		// if not consistent terminate program and throw a exception
 		if (!node.getNodeType().equals("COMMENT") || !string.equals(node.getNodeData())) {
 			logMetacat.error("Inconsistence happened: ");
@@ -1091,7 +1104,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 	 * PI may occur before or after the root element.
 	 */
 	public void processingInstruction(String target, String data) throws SAXException {
-		logMetacat.debug("PI");
+		logMetacat.trace("PI");
 		if (!handleInlineData) {
 			DBSAXNode currentNode = (DBSAXNode) nodeStack.peek();
 			endNodeId = currentNode.writeChildNodeToDB("PI", target, data, docid);
@@ -1102,14 +1115,14 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 			inlinePI.append(" ");
 			inlinePI.append(data);
 			inlinePI.append("?>");
-			logMetacat.debug("inline data pi is: " + inlinePI.toString());
+			logMetacat.trace("inline data pi is: " + inlinePI.toString());
 			writeInlineDataIntoFile(inlineDataFileWriter, inlinePI);
 		}
 	}
 
 	/** SAX Handler that is called at the start of Namespace */
 	public void startPrefixMapping(String prefix, String uri) throws SAXException {
-		logMetacat.debug("NAMESPACE");
+		logMetacat.trace("NAMESPACE");
 		if (!handleInlineData) {
 			namespaces.put(prefix, uri);
 		} else {
@@ -1125,14 +1138,14 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 		// When validation is turned "on", white spaces are reported here
 		// When validation is turned "off" white spaces are not reported here,
 		// but through characters() callback
-		logMetacat.debug("IGNORABLEWHITESPACE");
+		logMetacat.trace("IGNORABLEWHITESPACE");
 		if (!handleInlineData) {
 			DBSAXNode currentNode = (DBSAXNode) nodeStack.peek();
 				String data = new String(cbuf, start, len);
 				// compare whitespace in access top module
 				if (processingTopLevelAccess && needToCheckAccessModule) {
 					compareWhiteSpace(currentUnchangeableAccessModuleNodeStack, data,
-							UPDATEACCESSERROR);
+							UPDATEACCESSERROR+identifier);
 				}
 				// Write the content of the node to the database
 				if (needToCheckAccessModule
@@ -1175,7 +1188,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 
 	/** SAX Handler that receives notification of end of the document */
 	public void endDocument() throws SAXException {
-		logMetacat.debug("end Document");
+		logMetacat.trace("end Document");
 		// There are some unchangable subtree didn't be compare
 		// This maybe cause user change the subtree id
 		if (!super.getIsRevisionDoc()) {
@@ -1272,7 +1285,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 							AccessSection oldAccessObj = getAccessSectionFromUnchangableAccessVector(referenceId);
 							// if oldAccessObj is null something is wrong
 							if (oldAccessObj == null) {
-								throw new SAXException(UPDATEACCESSERROR);
+								throw new SAXException(UPDATEACCESSERROR+identifier);
 							}// if
 							else {
 								// Get the node stack from old access obj
@@ -1343,7 +1356,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 		// make sure stack1 and stack2 are not empty
 		if (stack1.isEmpty() || stack2.isEmpty()) {
 			logMetacat.error("Because stack is empty!");
-			throw new SAXException(UPDATEACCESSERROR);
+			throw new SAXException(UPDATEACCESSERROR+identifier);
 		}
 		// go throw two stacks and compare every element
 		while (!stack1.isEmpty()) {
@@ -1355,12 +1368,12 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 				record2 = stack2.pop();
 			} catch (EmptyStackException ee) {
 				logMetacat.error("Node stack2 is empty but stack1 isn't!");
-				throw new SAXException(UPDATEACCESSERROR);
+				throw new SAXException(UPDATEACCESSERROR+identifier);
 			}
 			// if two records are not same throw a exception
 			if (!record1.contentEquals(record2)) {
 				logMetacat.error("Two records from new and old stack are not " + "same!");
-				throw new SAXException(UPDATEACCESSERROR);
+				throw new SAXException(UPDATEACCESSERROR+identifier);
 			}// if
 		}// while
 
@@ -1368,7 +1381,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 		if (!stack2.isEmpty()) {
 			logMetacat
 					.error("stack2 still has some elements while stack " + "is empty! ");
-			throw new SAXException(UPDATEACCESSERROR);
+			throw new SAXException(UPDATEACCESSERROR+identifier);
 		}// if
 	}// comparingNodeStacks
 
@@ -1432,7 +1445,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 										|| currentController.hasPermission(user, groups, "WRITE")
 										)
 								) {
-							throw new SAXException(UPDATEACCESSERROR + " id: " + dataDocid);
+							throw new SAXException(UPDATEACCESSERROR +  identifier  +" for the data object "+dataDocid);
 						}
 					} catch (SQLException sqle) {
 						throw new SAXException(
@@ -1453,7 +1466,7 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 						PermissionController controller = new PermissionController(previousDocid);
 
 						if (!controller.hasPermission(user, groups, "WRITE")) {
-							throw new SAXException(UPDATEACCESSERROR);
+							throw new SAXException(UPDATEACCESSERROR+identifier+ " for an inline object");
 						}
 					} catch (SQLException sqle) {
 						throw new SAXException(
@@ -1597,6 +1610,10 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 
 				pstmt.setString(7, subSectionId);
 				logMetacat.debug("SubSectionId in accesstable: " + subSectionId);
+				
+				// Save guid of data object for syncing of access policy with CN after parsing
+				// is successful (see DocumentImpl.write)
+				guidsToSync.add(referencedGuid);
 			}
 
 			Vector<AccessRule> accessRules = accessSection.getAccessRules();
@@ -1637,7 +1654,6 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 		// for D1, refresh the entries
 		HazelcastService.getInstance().refreshSystemMetadataEntry(guid);
 		HazelcastService.getInstance().refreshSystemMetadataEntry(referencedGuid);
-		
 
 	}// writeGivenAccessRuleIntoDB
 
@@ -1964,13 +1980,17 @@ public class Eml210SAXHandler extends DBSAXHandler implements AccessControlInter
 					// check EITHER previous or current id for access rules
 					// see: https://projects.ecoinformatics.org/ecoinfo/issues/5647
 					PermissionController previousController = new PermissionController(previousDocid);
-					PermissionController currentController = new PermissionController(accessionNumber);				
-					if (previousController.hasPermission(user, groups, AccessControlInterface.ALLSTRING)
+					PermissionController currentController = new PermissionController(accessionNumber);	
+					if(writeAccessRules) {
+					    if (previousController.hasPermission(user, groups, AccessControlInterface.ALLSTRING)
+							|| previousController.hasPermission(user, groups, AccessControlInterface.CHMODSTRING)
 							|| currentController.hasPermission(user, groups, AccessControlInterface.ALLSTRING)
+							|| currentController.hasPermission(user, groups, AccessControlInterface.CHMODSTRING)
 							) {
-						onlineDataFileIdInTopAccessVector.add(guid);
-					} else {
-						throw new SAXException(UPDATEACCESSERROR);
+					        onlineDataFileIdInTopAccessVector.add(guid);
+					    } else {
+					        throw new SAXException(UPDATEACCESSERROR+identifier+" for the data object "+previousDocid);
+					    }
 					}
 				} 
 			}// try

@@ -27,17 +27,16 @@ import java.io.IOException;
 import java.sql.SQLException;
 import java.util.HashMap;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.dataone.exceptions.MarshallingException;
 import org.dataone.service.util.TypeMarshaller;
-import org.dataone.service.exceptions.InsufficientResources;
-import org.dataone.service.exceptions.InvalidRequest;
 import org.dataone.service.exceptions.NotFound;
 import org.dataone.service.exceptions.NotImplemented;
 import org.dataone.service.exceptions.ServiceFailure;
-import org.dataone.service.types.v1.ObjectFormat;
+import org.dataone.service.types.v2.ObjectFormat;
 import org.dataone.service.types.v1.ObjectFormatIdentifier;
-import org.dataone.service.types.v1.ObjectFormatList;
-import org.jibx.runtime.JiBXException;
+import org.dataone.service.types.v2.ObjectFormatList;
 
 import edu.ucsb.nceas.metacat.DBUtil;
 import edu.ucsb.nceas.metacat.DocumentImpl;
@@ -53,7 +52,7 @@ import edu.ucsb.nceas.utilities.PropertyNotFoundException;
  */
 public class ObjectFormatService {
 
-	private Logger logMetacat = Logger.getLogger(ObjectFormatService.class);
+	private Log logMetacat = LogFactory.getLog(ObjectFormatService.class);
 
 	/* The scope of the object formats docid used as the metacat identifier */
 	public static final String OBJECT_FORMAT_DOCID = "OBJECT_FORMAT_LIST.1";
@@ -207,7 +206,7 @@ public class ObjectFormatService {
 							"Unexpected exception from the service - "
 									+ e.getClass() + ": " + e.getMessage());
 
-				} catch (JiBXException e) {
+				} catch (MarshallingException e) {
 					throw new ServiceFailure("4841",
 							"Unexpected exception from the service - "
 									+ e.getClass() + ": " + e.getMessage());

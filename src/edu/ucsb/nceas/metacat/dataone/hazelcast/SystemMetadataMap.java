@@ -6,10 +6,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.dataone.service.exceptions.InvalidSystemMetadata;
 import org.dataone.service.types.v1.Identifier;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.dataone.service.types.v2.SystemMetadata;
 
 import com.hazelcast.core.MapLoader;
 import com.hazelcast.core.MapStore;
@@ -25,11 +26,18 @@ import edu.ucsb.nceas.metacat.McdbDocNotFoundException;
 public class SystemMetadataMap 
     implements MapStore<Identifier, SystemMetadata>, MapLoader<Identifier, SystemMetadata> {
 
-  private Logger logMetacat = Logger.getLogger(SystemMetadataMap.class);
+  private Log logMetacat = LogFactory.getLog(SystemMetadataMap.class);
 
 	@Override
 	public void delete(Identifier arg0) {
-		// we do not delete system metadata
+		if(arg0!= null) {
+			logMetacat.debug("delete the identifier"+arg0.getValue());
+			boolean success = IdentifierManager.getInstance().deleteSystemMetadata(arg0.getValue());
+			if(!success) {
+				throw new RuntimeException("SystemMetadataMap.delete - the system metadata of guid - "+arg0.getValue()+" can't be removed successfully.");
+			}
+		}
+		
 	}
 
 	@Override
@@ -71,6 +79,7 @@ public class SystemMetadataMap
 		} catch (McdbDocNotFoundException e) {
 			//throw new RuntimeException(e.getMessage(), e);
 			// not found => null
+			logMetacat.warn("could not load system metadata for: " +  pid.getValue());
 			return null;
 		}
 		catch (Exception e) {

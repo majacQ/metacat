@@ -28,18 +28,22 @@ import java.util.Set;
 
 import javax.xml.parsers.ParserConfigurationException;
 
+import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.embedded.EmbeddedSolrServer;
 import org.apache.solr.client.solrj.response.QueryResponse;
+import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.XML;
 import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.schema.IndexSchema;
 import org.apache.solr.schema.SchemaField;
+import org.apache.solr.servlet.SolrRequestParsers;
 import org.dataone.service.exceptions.NotFound;
 import org.dataone.service.exceptions.NotImplemented;
 import org.dataone.service.exceptions.UnsupportedType;
+import org.dataone.service.types.v1.Identifier;
 import org.dataone.service.types.v1.Subject;
 import org.xml.sax.SAXException;
 
@@ -65,6 +69,7 @@ public class EmbeddedSolrQueryService extends SolrQueryService {
      * @throws NotFound 
      */
     public EmbeddedSolrQueryService(EmbeddedSolrServer solrServer, CoreContainer coreContainer, String collectionName) throws NotFound {
+        //System.out.println("+++++++++++++++++++++++++++++++++++= created embededsolrqueryservice.");
         if(solrServer == null) {
             throw new NullPointerException("EmbeddedSolrQueryService.constructor - the EmbeddedSolrServer parameter can't be null.");
         }
@@ -81,7 +86,7 @@ public class EmbeddedSolrQueryService extends SolrQueryService {
         if(solrCore == null) {
             throw new NotFound("0000","EmbeddedSolrQueryService.constructor - There is no SolrCore named "+collectionName+".");
         }
-        schema = solrCore.getSchema();
+        schema = solrCore.getLatestSchema();
         fieldMap = schema.getFields();
     }
     /**
@@ -101,6 +106,7 @@ public class EmbeddedSolrQueryService extends SolrQueryService {
      * is null, there will be no access rules for the query. This is for the embedded solr server.
      * @param query the query params. 
      * @param subjects the user's identity which sent the query
+     * @param method  the method such as GET, POST and et al will be used in this query. This only works for the HTTP Solr server.
      * @return the response
      * @throws SAXException 
      * @throws IOException 
@@ -109,7 +115,7 @@ public class EmbeddedSolrQueryService extends SolrQueryService {
      * @throws UnsupportedType 
      * @throws Exception
      */
-    public  InputStream query(SolrParams query, Set<Subject>subjects) throws ParserConfigurationException, IOException, SAXException, SolrServerException, UnsupportedType {
+    public  InputStream query(SolrParams query, Set<Subject>subjects, SolrRequest.METHOD method) throws ParserConfigurationException, IOException, SAXException, SolrServerException, UnsupportedType {
         InputStream inputStream = null;
         String wt = query.get(WT);
         query = appendAccessFilterParams(query, subjects);
@@ -118,7 +124,7 @@ public class EmbeddedSolrQueryService extends SolrQueryService {
         if (isSupportedWT(wt)) {
             // just handle as normal solr query
             //reload the core before query. Only after reloading the core, the query result can reflect the change made in metacat-index module.
-            coreContainer.reload(collectionName);
+            coreContainer.load();
             QueryResponse response = solrServer.query(query);
             inputStream = solrTransformer.transformResults(query, response, wt);
         } else {
@@ -170,5 +176,49 @@ public class EmbeddedSolrQueryService extends SolrQueryService {
             } 
             return solrSpecVersion;
         }
+    }
+    
+    /**
+     * If there is a solr doc for the given id.
+     * @param id - the specified id.
+     * @return true if there is a solr doc for this id.
+     */
+    public boolean hasSolrDoc(Identifier id) throws ParserConfigurationException, SolrServerException, IOException, SAXException{
+    	boolean hasIt = false;
+    	if(id != null && id.getValue() != null && !id.getValue().trim().equals("") ) {
+    		SolrParams query = buildIdQuery(id.getValue());
+    		coreContainer.reload(collectionName);
+            QueryResponse response = solrServer.query(query);
+            hasIt = hasResult(response);
+    	}
+    	return hasIt;
+    }
+    
+    /**
+     * Build a query for decide if the solr server has the id.
+     * @param id
+     * @return the query
+     */
+    public static SolrParams buildIdQuery(String id) {
+    	    String query = "select?q=id:"+id;
+    		query = query.replaceAll("\\+", "%2B");
+            SolrParams solrParams = SolrRequestParsers.parseQueryString(query);
+            return solrParams;
+    }
+    
+    /**
+     * Determine if the response has any solr documents.
+     * @param response
+     * @return true if it has at least one solr document;
+     */
+    public static boolean hasResult(QueryResponse response) {
+    	boolean hasResult = false;
+    	if(response != null) {
+    		SolrDocumentList list = response.getResults();
+    		if(list != null && list.getNumFound() >0) {
+    			hasResult = true;
+    		}
+    	}
+    	return hasResult;
     }
 }

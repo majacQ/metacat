@@ -30,7 +30,11 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
+
+import edu.ucsb.nceas.metacat.dataone.quota.QuotaServiceManager;
 
 /**
  * Metacat implemantation of Earthgrid (Ecogrid) REST API as a servlet. In each request
@@ -40,7 +44,7 @@ import org.apache.log4j.Logger;
  */
 public class D1RestServlet extends HttpServlet {
 
-    protected Logger logMetacat;
+    protected Log logMetacat = LogFactory.getLog(this.getClass());;
     protected D1ResourceHandler handler;
 
     /**
@@ -62,7 +66,13 @@ public class D1RestServlet extends HttpServlet {
      */
     @Override
     public void init(ServletConfig config) throws ServletException {
-        logMetacat = Logger.getLogger(this.getClass());
+        try {
+            QuotaServiceManager.getInstance().startDailyCheck();//four children servlet classes (cn/mn v2, v1) will call this method
+        } catch (Exception e) {
+            String error = "D1RestServlet.init - can't start the timer task to checking un-reported usages in the quota service: " + e.getMessage();
+            logMetacat.error(error);
+            throw new ServletException(error);
+        }
         super.init(config);
     }
 
@@ -70,7 +80,8 @@ public class D1RestServlet extends HttpServlet {
     @Override
     protected void doGet(HttpServletRequest request,
             HttpServletResponse response) throws ServletException, IOException {
-        System.out.println("HTTP Verb: GET");
+        //System.out.println("HTTP Verb: GET");
+        logMetacat.info("D1RestServlet.doGet - HTTP Verb: GET");
         handler = createHandler(request, response);
         handler.handle(D1ResourceHandler.GET);
     }
@@ -79,7 +90,8 @@ public class D1RestServlet extends HttpServlet {
     @Override
     protected void doPost(HttpServletRequest request,
             HttpServletResponse response) throws ServletException, IOException {
-        System.out.println("HTTP Verb: POST");
+        //System.out.println("HTTP Verb: POST");
+        logMetacat.info("D1RestServlet.doPost - HTTP Verb: POST");
         handler = createHandler(request, response);
         handler.handle(D1ResourceHandler.POST);
     }
@@ -88,7 +100,8 @@ public class D1RestServlet extends HttpServlet {
     @Override
     protected void doDelete(HttpServletRequest request,
             HttpServletResponse response) throws ServletException, IOException {
-        System.out.println("HTTP Verb: DELETE");
+        //System.out.println("HTTP Verb: DELETE");
+        logMetacat.info("D1RestServlet.doDelete - HTTP Verb: DELETE");
         handler = createHandler(request, response);
         handler.handle(D1ResourceHandler.DELETE);
     }
@@ -97,7 +110,8 @@ public class D1RestServlet extends HttpServlet {
     @Override
     protected void doPut(HttpServletRequest request,
             HttpServletResponse response) throws ServletException, IOException {
-        System.out.println("HTTP Verb: PUT");
+        //System.out.println("HTTP Verb: PUT");
+        logMetacat.info("D1RestServlet.doPut - HTTP Verb: PUT");
         handler = createHandler(request, response);
         handler.handle(D1ResourceHandler.PUT);
     }
@@ -106,7 +120,8 @@ public class D1RestServlet extends HttpServlet {
     @Override
     protected void doHead(HttpServletRequest request,
             HttpServletResponse response) throws ServletException, IOException {
-        System.out.println("HTTP Verb: HEAD");
+        //System.out.println("HTTP Verb: HEAD");
+        logMetacat.info("D1RestServlet.doHead - HTTP Verb: HEAD");
         handler = createHandler(request, response);
         handler.handle(D1ResourceHandler.HEAD);
     }

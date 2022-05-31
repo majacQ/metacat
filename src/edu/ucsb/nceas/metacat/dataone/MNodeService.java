@@ -23,23 +23,34 @@
 
 package edu.ucsb.nceas.metacat.dataone;
 
+import com.hp.hpl.jena.rdf.model.Model;
+import com.hp.hpl.jena.rdf.model.ModelFactory;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.io.StringReader;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
+import java.lang.NullPointerException;
 import java.math.BigInteger;
 import java.net.URISyntaxException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.List;
@@ -48,18 +59,30 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.UUID;
 import java.util.Vector;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.xml.transform.Result;
+import javax.xml.transform.Source;
+import javax.xml.transform.TransformerException;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 
-import org.apache.commons.beanutils.BeanUtils;
 import org.apache.commons.io.IOUtils;
-import org.apache.log4j.Logger;
-import org.dataone.client.CNode;
-import org.dataone.client.D1Client;
-import org.dataone.client.MNode;
-import org.dataone.client.ObjectFormatCache;
+import org.apache.commons.lang.NotImplementedException;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.LogFactory;
+import org.apache.solr.client.solrj.SolrRequest;
+import org.apache.solr.common.params.MultiMapSolrParams;
+import org.apache.solr.common.params.SolrParams;
+import org.dataone.client.v2.CNode;
+import org.dataone.client.v2.itk.D1Client;
+import org.dataone.client.v2.MNode;
+import org.dataone.client.v2.formats.ObjectFormatCache;
 import org.dataone.client.auth.CertificateManager;
-import org.dataone.client.formats.ObjectFormatInfo;
+import org.dataone.client.v2.formats.ObjectFormatInfo;
 import org.dataone.configuration.Settings;
 import org.dataone.ore.ResourceMapFactory;
 import org.dataone.service.exceptions.BaseException;
@@ -74,73 +97,99 @@ import org.dataone.service.exceptions.NotImplemented;
 import org.dataone.service.exceptions.ServiceFailure;
 import org.dataone.service.exceptions.SynchronizationFailed;
 import org.dataone.service.exceptions.UnsupportedType;
-import org.dataone.service.mn.tier1.v1.MNCore;
-import org.dataone.service.mn.tier1.v1.MNRead;
-import org.dataone.service.mn.tier2.v1.MNAuthorization;
-import org.dataone.service.mn.tier3.v1.MNStorage;
-import org.dataone.service.mn.tier4.v1.MNReplication;
-import org.dataone.service.mn.v1.MNQuery;
+import org.dataone.service.mn.tier1.v2.MNCore;
+import org.dataone.service.mn.tier1.v2.MNRead;
+import org.dataone.service.mn.tier2.v2.MNAuthorization;
+import org.dataone.service.mn.tier3.v2.MNStorage;
+import org.dataone.service.mn.tier4.v2.MNReplication;
+import org.dataone.service.mn.v2.MNPackage;
+import org.dataone.service.mn.v2.MNQuery;
+import org.dataone.service.mn.v2.MNView;
+import org.dataone.service.types.v1.AccessPolicy;
+import org.dataone.service.types.v1.AccessRule;
 import org.dataone.service.types.v1.Checksum;
 import org.dataone.service.types.v1.DescribeResponse;
 import org.dataone.service.types.v1.Event;
 import org.dataone.service.types.v1.Identifier;
-import org.dataone.service.types.v1.Log;
-import org.dataone.service.types.v1.LogEntry;
+import org.dataone.service.types.v2.Log;
+import org.dataone.service.types.v2.LogEntry;
+import org.dataone.service.types.v2.OptionList;
+import org.dataone.service.types.v2.Property;
 import org.dataone.service.types.v1.MonitorInfo;
 import org.dataone.service.types.v1.MonitorList;
-import org.dataone.service.types.v1.Node;
-import org.dataone.service.types.v1.NodeList;
+import org.dataone.service.types.v2.Node;
+import org.dataone.service.types.v2.NodeList;
 import org.dataone.service.types.v1.NodeReference;
 import org.dataone.service.types.v1.NodeState;
 import org.dataone.service.types.v1.NodeType;
-import org.dataone.service.types.v1.ObjectFormat;
+import org.dataone.service.types.v2.ObjectFormat;
+import org.dataone.service.types.v1.Group;
 import org.dataone.service.types.v1.ObjectFormatIdentifier;
 import org.dataone.service.types.v1.ObjectList;
 import org.dataone.service.types.v1.Permission;
 import org.dataone.service.types.v1.Ping;
+import org.dataone.service.types.v1.Replica;
 import org.dataone.service.types.v1.ReplicationStatus;
 import org.dataone.service.types.v1.Schedule;
 import org.dataone.service.types.v1.Service;
+import org.dataone.service.types.v1.ServiceMethodRestriction;
 import org.dataone.service.types.v1.Services;
 import org.dataone.service.types.v1.Session;
 import org.dataone.service.types.v1.Subject;
 import org.dataone.service.types.v1.Synchronization;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.dataone.service.types.v2.SystemMetadata;
+import org.dataone.service.types.v2.TypeFactory;
 import org.dataone.service.types.v1.util.AuthUtils;
 import org.dataone.service.types.v1.util.ChecksumUtil;
 import org.dataone.service.types.v1_1.QueryEngineDescription;
 import org.dataone.service.types.v1_1.QueryEngineList;
 import org.dataone.service.types.v1_1.QueryField;
 import org.dataone.service.util.Constants;
+import org.dataone.service.util.TypeMarshaller;
+import org.dataone.speedbagit.SpeedBagIt;
 import org.dspace.foresite.OREException;
 import org.dspace.foresite.OREParserException;
 import org.dspace.foresite.ORESerialiserException;
 import org.dspace.foresite.ResourceMap;
+import org.ecoinformatics.datamanager.parser.DataPackage;
+import org.ecoinformatics.datamanager.parser.Entity;
+import org.ecoinformatics.datamanager.parser.generic.DataPackageParserInterface;
+import org.ecoinformatics.datamanager.parser.generic.Eml200DataPackageParser;
+import org.w3c.dom.Document;
 
-import edu.ucsb.nceas.ezid.EZIDException;
 import edu.ucsb.nceas.metacat.DBQuery;
 import edu.ucsb.nceas.metacat.DBTransform;
 import edu.ucsb.nceas.metacat.EventLog;
+import edu.ucsb.nceas.metacat.EventLogData;
 import edu.ucsb.nceas.metacat.IdentifierManager;
 import edu.ucsb.nceas.metacat.McdbDocNotFoundException;
 import edu.ucsb.nceas.metacat.MetaCatServlet;
 import edu.ucsb.nceas.metacat.MetacatHandler;
-
+import edu.ucsb.nceas.metacat.MetacatVersion;
+import edu.ucsb.nceas.metacat.ReadOnlyChecker;
 import edu.ucsb.nceas.metacat.common.query.EnabledQueryEngines;
 import edu.ucsb.nceas.metacat.common.query.stream.ContentTypeByteArrayInputStream;
 import edu.ucsb.nceas.metacat.dataone.hazelcast.HazelcastService;
+import edu.ucsb.nceas.metacat.dataone.quota.QuotaServiceManager;
+import edu.ucsb.nceas.metacat.dataone.resourcemap.ResourceMapModifier;
+import edu.ucsb.nceas.metacat.doi.DOIException;
+import edu.ucsb.nceas.metacat.doi.DOIService;
+import edu.ucsb.nceas.metacat.doi.DOIServiceFactory;
+import edu.ucsb.nceas.metacat.download.PackageDownloaderV1;
+import edu.ucsb.nceas.metacat.download.PackageDownloaderV2;
 import edu.ucsb.nceas.metacat.index.MetacatSolrEngineDescriptionHandler;
 import edu.ucsb.nceas.metacat.index.MetacatSolrIndex;
+import edu.ucsb.nceas.metacat.object.handler.NonXMLMetadataHandler;
+import edu.ucsb.nceas.metacat.object.handler.NonXMLMetadataHandlers;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.shared.MetacatUtilException;
-import edu.ucsb.nceas.metacat.util.DeleteOnCloseFileInputStream;
+import edu.ucsb.nceas.metacat.util.AuthUtil;
 import edu.ucsb.nceas.metacat.util.DocumentUtil;
+import edu.ucsb.nceas.metacat.util.SkinUtil;
 import edu.ucsb.nceas.metacat.util.SystemUtil;
 import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 import edu.ucsb.nceas.utilities.XMLUtilities;
-import gov.loc.repository.bagit.Bag;
-import gov.loc.repository.bagit.BagFactory;
-import gov.loc.repository.bagit.writer.impl.ZipWriter;
+import edu.ucsb.nceas.utilities.export.HtmlToPdf;
 
 /**
  * Represents Metacat's implementation of the DataONE Member Node 
@@ -166,34 +215,71 @@ import gov.loc.repository.bagit.writer.impl.ZipWriter;
  * MNStorage.create()
  * MNStorage.update()
  * MNStorage.delete()
+ * MNStorage.updateSystemMetadata()
  * MNReplication.replicate()
  * 
  */
 public class MNodeService extends D1NodeService 
-    implements MNAuthorization, MNCore, MNRead, MNReplication, MNStorage, MNQuery {
+    implements MNAuthorization, MNCore, MNRead, MNReplication, MNStorage, MNQuery, MNView, MNPackage {
 
     //private static final String PATHQUERY = "pathquery";
 	public static final String UUID_SCHEME = "UUID";
 	public static final String DOI_SCHEME = "DOI";
 	private static final String UUID_PREFIX = "urn:uuid:";
+	
+	private static String XPATH_EML_ID = "/eml:eml/@packageId";
 
 	/* the logger instance */
-    private Logger logMetacat = null;
+    private static org.apache.commons.logging.Log logMetacat = LogFactory.getLog(MNodeService.class);
     
     /* A reference to a remote Memeber Node */
-    private MNode mn;
+    //private MNode mn;
     
     /* A reference to a Coordinating Node */
     private CNode cn;
+    
+    // shared executor
+    private static ExecutorService executor = null;
+    private static boolean enforcePublicEntirePackageInPublish = true;
+    private boolean needSync = true;
+
+
+    static {
+        // use a shared executor service with nThreads == one less than available processors
+        int availableProcessors = Runtime.getRuntime().availableProcessors();
+        int nThreads = availableProcessors * 1;
+        nThreads--;
+        nThreads = Math.max(1, nThreads);
+        executor = Executors.newFixedThreadPool(nThreads); 
+        try {
+            enforcePublicEntirePackageInPublish = new Boolean(PropertyService.getProperty("guid.doi.enforcePublicReadableEntirePackage"));
+        } catch (Exception e) {
+            logMetacat.warn("MNodeService.static - couldn't get the value since " + e.getMessage());
+        }
+    }
 
 
     /**
-     * Singleton accessor to get an instance of MNodeService.
+     * Get an instance of MNodeService.
      * 
      * @return instance - the instance of MNodeService
      */
     public static MNodeService getInstance(HttpServletRequest request) {
         return new MNodeService(request);
+    }
+    
+    /**
+     * Get an instance of MNodeService.
+     * @param request  the servlet request associated with the MNodeService instance
+     * @param ipAddress  the ip address associated with the MNodeService instance
+     * @param userAgent  the user agent associated with the MNodeService instance
+     * @return the instance of MNodeService
+     */
+    public static MNodeService getInstance(HttpServletRequest request, String ipAddress, String userAgent) {
+        MNodeService mnService = new MNodeService(request);
+        mnService.setIpAddress(ipAddress);
+        mnService.setUserAgent(userAgent);
+        return mnService;
     }
 
     /**
@@ -201,10 +287,15 @@ public class MNodeService extends D1NodeService
      */
     private MNodeService(HttpServletRequest request) {
         super(request);
-        logMetacat = Logger.getLogger(MNodeService.class);
-        
         // set the Member Node certificate file location
         CertificateManager.getInstance().setCertificateLocation(Settings.getConfiguration().getString("D1Client.certificate.file"));
+
+        try {
+            needSync = (new Boolean(PropertyService.getProperty("dataone.nodeSynchronize"))).booleanValue();
+        } catch (PropertyNotFoundException e) {
+            // TODO Auto-generated catch block
+            logMetacat.warn("MNodeService.constructor : can't find the property to indicate if the memeber node need to be synchronized. It will use the default value - true.");
+        }
     }
 
     /**
@@ -224,24 +315,52 @@ public class MNodeService extends D1NodeService
      * @throws InvalidRequest
      */
     @Override
-    public Identifier delete(Session session, Identifier pid) 
+    public Identifier delete(Session session, Identifier id) 
         throws InvalidToken, ServiceFailure, NotAuthorized, NotFound, NotImplemented {
 
-    	// only admin of  the MN or the CN is allowed a full delete
-        boolean allowed = false;
-        allowed = isAdminAuthorized(session);
-        
-        //check if it is the authoritative member node
-        if(!allowed) {
-            allowed = isAuthoritativeMNodeAdmin(session, pid);
+        String serviceFailureCode = "2902";
+        String notFoundCode = "2901";
+        String notAuthorizedCode = "2900";
+        String invalidTokenCode = "2903";
+        boolean needDeleteInfo = false;
+        if(isReadOnlyMode()) {
+            throw new ServiceFailure("2902", ReadOnlyChecker.DATAONEERROR);
         }
         
-        if (!allowed) { 
-            throw new NotAuthorized("1320", "The provided identity does not have " + "permission to delete objects on the Node.");
+        Identifier HeadOfSid = getPIDForSID(id, serviceFailureCode);
+        if(HeadOfSid != null) {
+            id = HeadOfSid;
         }
+        SystemMetadata sysmeta = null;
+        try {
+            sysmeta =getSystemMetadataForPID(id, serviceFailureCode, invalidTokenCode, notFoundCode, needDeleteInfo);
+        } catch (InvalidRequest e) {
+            throw new InvalidToken(invalidTokenCode, e.getMessage());
+        }
+
+        try {
+            D1AuthHelper authDel = new D1AuthHelper(request, id, notAuthorizedCode, serviceFailureCode);
+            //authDel.doAuthoritativeMNAuthorization(session, sysmeta);
+            authDel.doAdminAuthorization(session);
+        }
+        catch (NotAuthorized na) {
+            NotAuthorized na2 = new NotAuthorized(notAuthorizedCode, "The provided identity does not have permission to delete objects on the Node.");
+            na2.initCause(na);
+            throw na2;
+        }
+        
+        try {
+            String quotaSubject = request.getHeader(QuotaServiceManager.QUOTASUBJECTHEADER);
+            QuotaServiceManager.getInstance().enforce(quotaSubject, session.getSubject(), sysmeta, QuotaServiceManager.DELETEMETHOD);
+        } catch (InsufficientResources e) {
+            throw new ServiceFailure(serviceFailureCode, "The user doesn't have enough quota to delete the pid " + id.getValue() + " since " + e.getMessage());
+        } catch (InvalidRequest e) {
+            throw new InvalidToken("2903", "The quota service in the delete action has an invalid request - " + e.getMessage());
+        }
+        
     	
-    	// defer to superclass implementation
-        return super.delete(session, pid);
+    	   // defer to superclass implementation
+        return super.delete(session.getSubject().getValue(), id);
     }
 
     /**
@@ -273,72 +392,233 @@ public class MNodeService extends D1NodeService
         Identifier newPid, SystemMetadata sysmeta) 
         throws InvalidToken, ServiceFailure, NotAuthorized, IdentifierNotUnique, 
         UnsupportedType, InsufficientResources, NotFound, 
-        InvalidSystemMetadata, NotImplemented, InvalidRequest {
+        InvalidSystemMetadata, NotImplemented, InvalidRequest 
+    {
+        
+        long startTime = System.currentTimeMillis();
+
+        if(isReadOnlyMode()) {
+            throw new ServiceFailure("1310", ReadOnlyChecker.DATAONEERROR);
+        }
+
+        //transform a sid to a pid if it is applicable
+        String serviceFailureCode = "1310";
+        Identifier sid = getPIDForSID(pid, serviceFailureCode);
+        if(sid != null) {
+            pid = sid;
+        }
 
         String localId = null;
         boolean allowed = false;
         boolean isScienceMetadata = false;
-        
+
         if (session == null) {
-        	throw new InvalidToken("1210", "No session has been provided");
+            throw new InvalidToken("1210", "No session has been provided");
         }
         Subject subject = session.getSubject();
 
         // verify the pid is valid format
         if (!isValidIdentifier(pid)) {
-        	throw new InvalidRequest("1202", "The provided identifier is invalid.");
+            throw new InvalidRequest("1202", "The provided identifier is invalid.");
         }
+
+        // verify the new pid is valid format
+        if (!isValidIdentifier(newPid)) {
+            throw new InvalidRequest("1202", "The provided identifier is invalid.");
+        }
+        
+        if (!isValidIdentifier(sysmeta.getIdentifier())) {
+            throw new InvalidRequest("1202", "The provided identifier on the system metadata is invalid.");
+        }
+        
+        if (!newPid.equals(sysmeta.getIdentifier())) {
+            throw new InvalidRequest("1202", "The new identifier " + newPid.getValue() + " doesn't match the identifier " + sysmeta.getIdentifier().getValue() + " in the system metadata.");
+        }
+
+        // make sure that the newPid doesn't exists
+        boolean idExists = true;
+        try {
+
+            idExists = IdentifierManager.getInstance().identifierExists(newPid.getValue());
+        } catch (SQLException e) {
+            throw new ServiceFailure("1310", 
+                    "The requested identifier " + newPid.getValue() +
+                    " couldn't be determined if it is unique since : "+e.getMessage());
+        }
+        if (idExists) {
+            throw new IdentifierNotUnique("1220", 
+                    "The requested identifier " + newPid.getValue() +
+                    " is already used by another object and" +
+                    "therefore can not be used for this object. Clients should choose" +
+                    "a new identifier that is unique and retry the operation or " +
+                    "use CN.reserveIdentifier() to reserve one.");
+
+        }
+
+
 
         // check for the existing identifier
         try {
             localId = IdentifierManager.getInstance().getLocalId(pid.getValue());
-            
+
         } catch (McdbDocNotFoundException e) {
             throw new InvalidRequest("1202", "The object with the provided " + 
-                "identifier was not found.");
-            
+                    "identifier was not found.");
+
+        } catch (SQLException ee) {
+            throw new ServiceFailure("1310", "The object with the provided " + 
+                    "identifier "+pid.getValue()+" can't be identified since - "+ee.getMessage());
         }
-        
+
+        long end =System.currentTimeMillis();
+        logMetacat.debug("MNodeService.update - the time spending on checking the validation of the old pid "+pid.getValue()+" and the new pid "+newPid.getValue()+" is "+(end- startTime)+ " milli seconds.");
+
         // set the originating node
         NodeReference originMemberNode = this.getCapabilities().getIdentifier();
         sysmeta.setOriginMemberNode(originMemberNode);
-        
+
         // set the submitter to match the certificate
         sysmeta.setSubmitter(subject);
         // set the dates
         Date now = Calendar.getInstance().getTime();
         sysmeta.setDateSysMetadataModified(now);
         sysmeta.setDateUploaded(now);
-        
+
         // make sure serial version is set to something
         BigInteger serialVersion = sysmeta.getSerialVersion();
         if (serialVersion == null) {
-        	sysmeta.setSerialVersion(BigInteger.ZERO);
+            sysmeta.setSerialVersion(BigInteger.ZERO);
         }
-
+        long startTime2 = System.currentTimeMillis();
         // does the subject have WRITE ( == update) priveleges on the pid?
-        allowed = isAuthorized(session, pid, Permission.WRITE);
+        //allowed = isAuthorized(session, pid, Permission.WRITE);
+        //CN having the permission is allowed; user with the write permission and calling on the authoritative node is allowed.
+        
+        // get the existing system metadata for the object
+        String invalidRequestCode = "1202";
+        String notFoundCode ="1280";
+        SystemMetadata existingSysMeta = getSystemMetadataForPID(pid, serviceFailureCode, invalidRequestCode, notFoundCode, true);
+        D1AuthHelper authDel = null;
+        try {
+            authDel = new D1AuthHelper(request,pid,"1200","1310");
+            //if the user has the change permission, it will be all set; otherwise, we need to check more.
+            authDel.doUpdateAuth(session, existingSysMeta, Permission.CHANGE_PERMISSION, this.getCurrentNodeId());
+            allowed = true;
+        } catch(ServiceFailure e) {
+            throw new ServiceFailure("1310", "Can't determine if the client has the permission to update the object with id "+pid.getValue()+" since "+e.getDescription());
+        } catch(NotAuthorized e) {
+            //the user doesn't have the change permission. However, if it has the write permission and doesn't modify the access rules, Metacat still allows it to update the object
+            try {
+                authDel.doUpdateAuth(session, existingSysMeta, Permission.WRITE, this.getCurrentNodeId());
+                //now the user has the write the permission. If the access rules in the new and old system metadata are the same, it is fine; otherwise, Metacat throws an exception
+                if (D1NodeService.isAccessControlDirty(sysmeta, existingSysMeta)) {
+                    throw new NotAuthorized("1200", "Can't update the object with id " + pid.getValue() + " since the user try to change the access rules without the change permission: " + e.getDescription());
+                }
+                allowed = true;
+            } catch(ServiceFailure ee) {
+                throw new ServiceFailure("1310", "Can't determine if the client has the permission to update the object with id " + pid.getValue() + " since " + ee.getDescription());
+            } catch(NotAuthorized ee) {
+                throw new NotAuthorized("1200", "Can't update the object with id " + pid.getValue() + " since " + ee.getDescription());
+            }
+        }
+        
+        end =System.currentTimeMillis();
+        logMetacat.debug("MNodeService.update - the time spending on checking if the user has the permission to update the old pid "+pid.getValue()+" with the new pid "+newPid.getValue()+" is "+(end- startTime2)+ " milli seconds.");
 
         if (allowed) {
-        	
-        	// check quality of SM
-        	if (sysmeta.getObsoletedBy() != null) {
-        		throw new InvalidSystemMetadata("1300", "Cannot include obsoletedBy when updating object");
-        	}
-        	if (sysmeta.getObsoletes() != null && !sysmeta.getObsoletes().getValue().equals(pid.getValue())) {
-        		throw new InvalidSystemMetadata("1300", "The identifier provided in obsoletes does not match old Identifier");
-        	}
+            long startTime3 = System.currentTimeMillis();
+            
+            //check the if it has enough quota if th quota service is enabled
+            String quotaSubject = request.getHeader(QuotaServiceManager.QUOTASUBJECTHEADER);
+            QuotaServiceManager.getInstance().enforce(quotaSubject, session.getSubject(), sysmeta, QuotaServiceManager.UPDATEMETHOD);
+            
+            // check quality of SM
+            if (sysmeta.getObsoletedBy() != null) {
+                throw new InvalidSystemMetadata("1300", "Cannot include obsoletedBy when updating object");
+            }
+            if (sysmeta.getObsoletes() != null && !sysmeta.getObsoletes().getValue().equals(pid.getValue())) {
+                throw new InvalidSystemMetadata("1300", "The identifier provided in obsoletes does not match old Identifier");
+            }
 
-            // get the existing system metadata for the object
-            SystemMetadata existingSysMeta = getSystemMetadata(session, pid);
+            
+            //System.out.println("the archive is "+existingSysMeta.getArchived());
+            //Base on documentation, we can't update an archived object:
+            //The update operation MUST fail with Exceptions.InvalidRequest on objects that have the Types.SystemMetadata.archived property set to true.
+            if(existingSysMeta.getArchived() != null && existingSysMeta.getArchived()) {
+                throw new InvalidRequest("1202","An archived object"+pid.getValue()+" can't be updated");
+            }
 
             // check for previous update
             // see: https://redmine.dataone.org/issues/3336
             Identifier existingObsoletedBy = existingSysMeta.getObsoletedBy();
             if (existingObsoletedBy != null) {
-            	throw new InvalidRequest("1202", 
-            			"The previous identifier has already been made obsolete by: " + existingObsoletedBy.getValue());
+                throw new InvalidRequest("1202", 
+                        "The previous identifier has already been made obsolete by: " + existingObsoletedBy.getValue());
             }
+            
+            //check the if client change the authoritative member node.
+            if (sysmeta.getAuthoritativeMemberNode() == null ||
+                    sysmeta.getAuthoritativeMemberNode().getValue().trim().equals("") ||
+                    sysmeta.getAuthoritativeMemberNode().getValue().equals("null")) {
+                sysmeta.setAuthoritativeMemberNode(originMemberNode);
+            } else if (existingSysMeta.getAuthoritativeMemberNode() != null && 
+                        !sysmeta.getAuthoritativeMemberNode().getValue().equals(
+                        existingSysMeta.getAuthoritativeMemberNode().getValue())){
+                throw new InvalidRequest("1202", "The previous authoriativeMemberNode is " + 
+                            existingSysMeta.getAuthoritativeMemberNode().getValue() + 
+                            " and new authoriativeMemberNode is " + 
+                            sysmeta.getAuthoritativeMemberNode().getValue() + 
+                            ". They don't match. Clients don't have the permission to change it.");
+            }
+            
+            end =System.currentTimeMillis();
+            logMetacat.debug("MNodeService.update - the time spending on checking the quality of the system metadata of the old pid "+pid.getValue()+" and the new pid "+newPid.getValue()+" is "+(end- startTime3)+ " milli seconds.");
+
+            //check the sid in the system metadata. If it exists, it should be non-exist or match the old sid in the previous system metadata.
+            Identifier sidInSys = sysmeta.getSeriesId();
+            if(sidInSys != null) {
+                if (!isValidIdentifier(sidInSys)) {
+                    throw new InvalidSystemMetadata("1300", "The provided series id in the system metadata is invalid.");
+                }
+                Identifier previousSid = existingSysMeta.getSeriesId();
+                if(previousSid != null) {
+                    // there is a previous sid, if the new sid doesn't match it, the new sid should be non-existing.
+                    if(!sidInSys.getValue().equals(previousSid.getValue())) {
+                        try {
+                            idExists = IdentifierManager.getInstance().identifierExists(sidInSys.getValue());
+                        } catch (SQLException e) {
+                            throw new ServiceFailure("1310", 
+                                    "The requested identifier " + sidInSys.getValue() +
+                                    " couldn't be determined if it is unique since : "+e.getMessage());
+                        }
+                        if(idExists) {
+                            throw new InvalidSystemMetadata("1300", "The series id "+sidInSys.getValue()+" in the system metadata doesn't match the previous series id "
+                                    +previousSid.getValue()+", so it should NOT exist. However, it was used by another object.");
+                        }
+                    }
+                } else {
+                    // there is no previous sid, the new sid should be non-existing.
+                    try {
+                        idExists = IdentifierManager.getInstance().identifierExists(sidInSys.getValue());
+                    } catch (SQLException e) {
+                        throw new ServiceFailure("1310", 
+                                "The requested identifier " + sidInSys.getValue() +
+                                " couldn't be determined if it is unique since : "+e.getMessage());
+                    }
+                    if(idExists) {
+                        throw new InvalidSystemMetadata("1300", "The series id "+sidInSys.getValue()+" in the system metadata should NOT exist since the previous series id is null."
+                                +"However, it was used by another object.");
+                    }
+                }
+                //the series id equals the pid (new pid hasn't been registered in the system, so IdentifierManager.getInstance().identifierExists method can't exclude this scenario)
+                if(sidInSys.getValue().equals(newPid.getValue())) {
+                    throw new InvalidSystemMetadata("1300", "The series id "+sidInSys.getValue()+" in the system metadata shouldn't have the same value of the pid.");
+                }
+            }
+
+            long end2 =System.currentTimeMillis();
+            logMetacat.debug("MNodeService.update - the time spending on checking the sid validation of the old pid "+pid.getValue()+" and the new pid "+newPid.getValue()+" is "+(end2- end)+ " milli seconds.");
+
 
             isScienceMetadata = isScienceMetadata(sysmeta);
 
@@ -348,34 +628,80 @@ public class MNodeService extends D1NodeService
                 // update the science metadata XML document
                 // TODO: handle non-XML metadata/data documents (like netCDF)
                 // TODO: don't put objects into memory using stream to string
-                String objectAsXML = "";
+                //String objectAsXML = "";
                 try {
-                    objectAsXML = IOUtils.toString(object, "UTF-8");
-                    // give the old pid so we can calculate the new local id 
-                    localId = insertOrUpdateDocument(objectAsXML, pid, session, "update");
+                    NonXMLMetadataHandler handler = NonXMLMetadataHandlers.newNonXMLMetadataHandler(sysmeta.getFormatId());
+                    if ( handler != null ) {
+                        //non-xml metadata object path
+                        if (ipAddress == null) {
+                            ipAddress = request.getRemoteAddr();
+                        }
+                        if (userAgent == null) {
+                            userAgent = request.getHeader("User-Agent");
+                        }
+                        EventLogData event =  new EventLogData(ipAddress, userAgent, null, null, "update");
+                        localId  = handler.save(object, sysmeta, session, event);
+                    } else {
+                        String formatId = null;
+                        if(sysmeta.getFormatId() != null) {
+                            formatId = sysmeta.getFormatId().getValue();
+                        }
+                        localId = insertOrUpdateDocument(object, "UTF-8", pid, session, "update", formatId, sysmeta.getChecksum());
+                    }
                     // register the newPid and the generated localId
                     if (newPid != null) {
                         IdentifierManager.getInstance().createMapping(newPid.getValue(), localId);
-
                     }
 
                 } catch (IOException e) {
-                    String msg = "The Node is unable to create the object. " + "There was a problem converting the object to XML";
-                    logMetacat.info(msg);
+                    String msg = "The Node is unable to create the object: "+pid.getValue() + "There was a problem converting the object to XML";
+                    logMetacat.error(msg, e);
+                    removeIdFromIdentifierTable(newPid);
                     throw new ServiceFailure("1310", msg + ": " + e.getMessage());
 
+                }  catch (PropertyNotFoundException e) {
+                    String msg = "The Node is unable to create the object. " +pid.getValue()+ " since the properties are not configured well "+e.getMessage();
+                    logMetacat.error(msg, e);
+                    removeIdFromIdentifierTable(newPid);
+                    throw new ServiceFailure("1310", msg);
+                } catch (Exception e) {
+                    logMetacat.error("MNService.update - couldn't write the metadata object to the disk since "+e.getMessage(), e);
+                    removeIdFromIdentifierTable(newPid);
+                    throw e;
                 }
 
             } else {
 
                 // update the data object
-                localId = insertDataObject(object, newPid, session);
+                try {
+                    if (ipAddress == null) {
+                        ipAddress = request.getRemoteAddr();
+                    }
+                    if (userAgent == null) {
+                        userAgent = request.getHeader("User-Agent");
+                    }
+                    EventLogData event =  new EventLogData(ipAddress, userAgent, null, null, "update");
+                    localId = insertDataObject(object, newPid, session, sysmeta.getChecksum(), event);
+                } catch (Exception e) {
+                    logMetacat.error("MNService.update - couldn't write the data object to the disk since "+e.getMessage(), e);
+                    removeIdFromIdentifierTable(newPid);
+                    throw e;
+                }
+
 
             }
-            
+
+            long end3 =System.currentTimeMillis();
+            logMetacat.debug("MNodeService.update - the time spending on saving the object with the new pid "+newPid.getValue()+" is "+(end3- end2)+ " milli seconds.");
+
             // add the newPid to the obsoletedBy list for the existing sysmeta
             existingSysMeta.setObsoletedBy(newPid);
-
+            //increase version
+            BigInteger current = existingSysMeta.getSerialVersion();
+            //System.out.println("the current version is "+current);
+            current = current.add(BigInteger.ONE);
+            //System.out.println("the new current version is "+current);
+            existingSysMeta.setSerialVersion(current);
             // then update the existing system metadata
             updateSystemMetadata(existingSysMeta);
 
@@ -387,35 +713,62 @@ public class MNodeService extends D1NodeService
             insertSystemMetadata(sysmeta);
 
             // log the update event
-            EventLog.getInstance().log(request.getRemoteAddr(), request.getHeader("User-Agent"), subject.getValue(), localId, Event.UPDATE.toString());
-            
+            //EventLog.getInstance().log(request.getRemoteAddr(), request.getHeader("User-Agent"), subject.getValue(), localId, Event.UPDATE.toString());
+
+            long end4 =System.currentTimeMillis();
+            logMetacat.debug("MNodeService.update - the time spending on updating/saving system metadata  of the old pid "+pid.getValue()+" and the new pid "+newPid.getValue()+" and saving the log information is "+(end4- end3)+ " milli seconds.");
+
             // attempt to register the identifier - it checks if it is a doi
             try {
-    			DOIService.getInstance().registerDOI(sysmeta);
-    		} catch (EZIDException e) {
-                throw new ServiceFailure("1190", "Could not register DOI: " + e.getMessage());
-    		}
+                DOIServiceFactory.getDOIService().registerDOI(sysmeta);
+            } catch (Exception e) {
+                String message = "MNodeService.update - The object " + newPid.getValue() + " has been saved successfully on Metacat. " 
+                                 + " However, the new metadata can't be registered on the DOI service: " + e.getMessage();
+                logMetacat.error(message);
+                throw new ServiceFailure("1310", message);
+            }
+            long end5 =System.currentTimeMillis();
+            logMetacat.debug("MNodeService.update - the time spending on registering the doi (if it is doi ) of the new pid "+newPid.getValue()+" is "+(end5- end4)+ " milli seconds.");
 
         } else {
             throw new NotAuthorized("1200", "The provided identity does not have " + "permission to UPDATE the object identified by " + pid.getValue()
-                    + " on the Member Node.");
+            + " on the Member Node.");
         }
 
+        long end6 =System.currentTimeMillis();
+        logMetacat.debug("MNodeService.update - the total time of updating the old pid " +pid.getValue() +" whth the new pid "+newPid.getValue()+" is "+(end6- startTime)+ " milli seconds.");
         return newPid;
     }
+    
 
     public Identifier create(Session session, Identifier pid, InputStream object, SystemMetadata sysmeta) throws InvalidToken, ServiceFailure, NotAuthorized,
             IdentifierNotUnique, UnsupportedType, InsufficientResources, InvalidSystemMetadata, NotImplemented, InvalidRequest {
 
+        if(isReadOnlyMode()) {
+            throw new ServiceFailure("1190", ReadOnlyChecker.DATAONEERROR);
+        }
         // check for null session
         if (session == null) {
-          throw new InvalidToken("1110", "Session is required to WRITE to the Node.");
+            throw new InvalidToken("1110", "Session is required to WRITE to the Node.");
         }
+
+        // verify the pid is valid format
+        if (!isValidIdentifier(pid)) {
+            throw new InvalidRequest("1102", "The provided identifier is invalid.");
+        }
+        objectExists(pid);
         // set the submitter to match the certificate
         sysmeta.setSubmitter(session.getSubject());
         // set the originating node
         NodeReference originMemberNode = this.getCapabilities().getIdentifier();
         sysmeta.setOriginMemberNode(originMemberNode);
+        
+        // if no authoritative MN, set it to the same
+        if (sysmeta.getAuthoritativeMemberNode() == null || sysmeta.getAuthoritativeMemberNode().getValue().trim().equals("") ||
+                sysmeta.getAuthoritativeMemberNode().getValue().equals("null")) {
+            sysmeta.setAuthoritativeMemberNode(originMemberNode);
+        }
+
         sysmeta.setArchived(false);
 
         // set the dates
@@ -438,17 +791,68 @@ public class MNodeService extends D1NodeService
               "The supplied system metadata is invalid. " +
               "The obsoletedBy field cannot have a value when creating entries.");
         }
-
+        
+        // verify the sid in the system metadata
+        Identifier sid = sysmeta.getSeriesId();
+        boolean idExists = false;
+        if(sid != null) {
+            if (!isValidIdentifier(sid)) {
+                throw new InvalidSystemMetadata("1180", "The provided series id is invalid.");
+            }
+            try {
+                idExists = IdentifierManager.getInstance().identifierExists(sid.getValue());
+            } catch (SQLException e) {
+                throw new ServiceFailure("1190", 
+                                        "The series identifier " + sid.getValue() +
+                                        " in the system metadata couldn't be determined if it is unique since : "+e.getMessage());
+            }
+            if (idExists) {
+                    throw new InvalidSystemMetadata("1180", 
+                              "The series identifier " + sid.getValue() +
+                              " is already used by another object and " +
+                              "therefore can not be used for this object. Clients should choose" +
+                              " a new identifier that is unique and retry the operation or " +
+                              "use CN.reserveIdentifier() to reserve one.");
+                
+            }
+            //the series id equals the pid (new pid hasn't been registered in the system, so IdentifierManager.getInstance().identifierExists method can't exclude this scenario )
+            if(sid.getValue().equals(pid.getValue())) {
+                throw new InvalidSystemMetadata("1180", "The series id "+sid.getValue()+" in the system metadata shouldn't have the same value of the pid.");
+            }
+        }
+        
+        boolean allowed = false;
+        try {
+          allowed = isAuthorized(session, pid, Permission.WRITE);
+                
+        } catch (NotFound e) {
+          // The identifier doesn't exist, writing should be fine.
+          allowed = true;
+        }
+        
+        if(!allowed) {
+            throw new NotAuthorized("1100", "Provited Identity doesn't have the WRITE permission on the pid "+pid.getValue());
+        }
+        logMetacat.debug("Allowed to create: " + pid.getValue());
+        
+        //check the if it has enough quota if th quota service is enabled
+        String quotaSubject = request.getHeader(QuotaServiceManager.QUOTASUBJECTHEADER);
+        try {
+            QuotaServiceManager.getInstance().enforce(quotaSubject, session.getSubject(), sysmeta, QuotaServiceManager.CREATEMETHOD);
+        } catch (NotFound e) {
+            throw new InvalidRequest("1102", "Can't find the resource " + e.getMessage());
+        }
         // call the shared impl
         Identifier resultPid = super.create(session, pid, object, sysmeta);
         
         // attempt to register the identifier - it checks if it is a doi
         try {
-			DOIService.getInstance().registerDOI(sysmeta);
-		} catch (EZIDException e) {
-			ServiceFailure sf = new ServiceFailure("1190", "Could not register DOI: " + e.getMessage());
-			sf.initCause(e);
-            throw sf;
+            DOIServiceFactory.getDOIService().registerDOI(sysmeta);
+		} catch (Exception e) {
+		    String message = "MNodeService.create - The object " + pid.getValue() + " has been created successfully on Metacat." 
+                    + " However, the metadata can't be registered on the DOI service: " + e.getMessage();
+			logMetacat.error(message);
+			throw new ServiceFailure("1190", message);
 		}
         
         // return 
@@ -481,6 +885,9 @@ public class MNodeService extends D1NodeService
             NodeReference sourceNode) throws NotImplemented, ServiceFailure,
             NotAuthorized, InvalidRequest, InsufficientResources,
             UnsupportedType {
+        /*if(isReadOnlyMode()) {
+            throw new InvalidRequest("2153", "The Metacat member node is on the read-only mode and your request can't be fulfiled. Please try again later.");
+        }*/
 
         if (session != null && sysmeta != null && sourceNode != null) {
             logMetacat.info("MNodeService.replicate() called with parameters: \n" +
@@ -490,6 +897,8 @@ public class MNodeService extends D1NodeService
                             sysmeta.getIdentifier().getValue()                    +
                             "\n" + "\tSource NodeReference ="                     +
                             sourceNode.getValue());
+        } else {
+            throw new InvalidRequest("2153", "The provided session or systemmetdata or sourceNode should NOT be null.");
         }
         boolean result = false;
         String nodeIdStr = null;
@@ -497,11 +906,20 @@ public class MNodeService extends D1NodeService
 
         // get the referenced object
         Identifier pid = sysmeta.getIdentifier();
+        // verify the pid is valid format
+        if (!isValidIdentifier(pid)) {
+            throw new InvalidRequest("2153", "The provided identifier in the system metadata is invalid.");
+        }
+        
+        if (!NodeReplicationPolicyChecker.check(sourceNode, sysmeta)) {
+            throw new InvalidRequest("2153", "The object " + pid.getValue() + " from sourceNode" + sourceNode.getValue() + 
+                     " is not allowed to replicate to this node based on the node replication policy.");
+        }
 
         // get from the membernode
         // TODO: switch credentials for the server retrieval?
-        this.mn = D1Client.getMN(sourceNode);
-        this.cn = D1Client.getCN();
+        
+ //       this.cn = D1Client.getCN();
         InputStream object = null;
         Session thisNodeSession = null;
         SystemMetadata localSystemMetadata = null;
@@ -517,7 +935,13 @@ public class MNodeService extends D1NodeService
             throw new NotAuthorized("2152", msg);
             
         }
+       
+        // only allow cns call this method
+        D1AuthHelper authDel = new D1AuthHelper(request, sysmeta.getIdentifier(), "2152","2151");
+        authDel.doCNOnlyAuthorization(session);
+ 
 
+        logMetacat.debug("Allowed to replicate: " + pid.getValue());
 
         // get the local node id
         try {
@@ -535,136 +959,185 @@ public class MNodeService extends D1NodeService
 
         }
         
-
         try {
-            // do we already have a replica?
             try {
-                localId = IdentifierManager.getInstance().getLocalId(pid.getValue());
-                // if we have a local id, get the local object
+                // do we already have a replica?
                 try {
-                    object = MetacatHandler.read(localId);
-                } catch (Exception e) {
-                	// NOTE: we may already know about this ID because it could be a data file described by a metadata file
-                	// https://redmine.dataone.org/issues/2572
-                	// TODO: fix this so that we don't prevent ourselves from getting replicas
-                	
-                    // let the CN know that the replication failed
-                	logMetacat.warn("Object content not found on this node despite having localId: " + localId);
-                	String msg = "Can't read the object bytes properly, replica is invalid.";
-                    ServiceFailure serviceFailure = new ServiceFailure("2151", msg);
-                    setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, serviceFailure);
-                    logMetacat.warn(msg);
-                    throw serviceFailure;
+                    localId = IdentifierManager.getInstance().getLocalId(pid.getValue());
+                    ObjectFormat objectFormat = null;
+                    String type = null;
+                    try {
+                        objectFormat = ObjectFormatCache.getInstance().getFormat(sysmeta.getFormatId());
+                    } catch (BaseException be) {
+                        logMetacat.warn("MNodeService.getReplica - Could not lookup ObjectFormat for: " + sysmeta.getFormatId(), be);
+                    }
+                    if (objectFormat != null) {
+                        type = objectFormat.getFormatType();
+                    }
+                    logMetacat.info("MNodeService.getReplica - the data type for the object " + pid.getValue() + " is " + type);
+                    // if we have a local id, get the local object
+                    try {
+                        object = MetacatHandler.read(localId, type);
+                    } catch (Exception e) {
+                        // NOTE: we may already know about this ID because it could be a data file described by a metadata file
+                        // https://redmine.dataone.org/issues/2572
+                        // TODO: fix this so that we don't prevent ourselves from getting replicas
+                        
+                        // let the CN know that the replication failed
+                        logMetacat.warn("Object content not found on this node despite having localId: " + localId);
+                        String msg = "Can't read the object bytes properly, replica is invalid.";
+                        ServiceFailure serviceFailure = new ServiceFailure("2151", msg);
+                        setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, serviceFailure);
+                        logMetacat.warn(msg);
+                        throw serviceFailure;
+                        
+                    }
+
+                } catch (McdbDocNotFoundException e) {
+                    logMetacat.info("No replica found. Continuing.");
                     
+                } catch (SQLException ee) {
+                    throw new ServiceFailure("2151", "Couldn't identify the local id of the object with the specified identifier "
+                                            +pid.getValue()+" since - "+ee.getMessage());
+                }
+                
+                // no local replica, get a replica
+                if ( object == null ) {
+                    /*boolean success = true;
+                    try {
+                        //use the v2 ping api to connect the source node
+                        mn.ping();
+                    } catch (Exception e) {
+                        success = false;
+                    }*/
+                    D1NodeVersionChecker checker = new D1NodeVersionChecker(sourceNode);
+                    String nodeVersion = checker.getVersion("MNRead");
+                    if(nodeVersion != null && nodeVersion.equals(D1NodeVersionChecker.V1)) {
+                        //The source node is a v1 node, we use the v1 api
+                        org.dataone.client.v1.MNode mNodeV1 =  org.dataone.client.v1.itk.D1Client.getMN(sourceNode);
+                        object = mNodeV1.getReplica(thisNodeSession, pid);
+                    } else if (nodeVersion != null && nodeVersion.equals(D1NodeVersionChecker.V2)){
+                     // session should be null to use the default certificate
+                        // location set in the Certificate manager
+                        MNode mn = D1Client.getMN(sourceNode);
+                        object = mn.getReplica(thisNodeSession, pid);
+                    } else {
+                        throw new ServiceFailure("2151", "The version of MNRead service is "+nodeVersion+" in the source node "+sourceNode.getValue()+" and it is not supported. Please check the information in the cn");
+                    }
+                    
+                    logMetacat.info("MNodeService.getReplica() called for identifier "
+                                    + pid.getValue());
+
                 }
 
-            } catch (McdbDocNotFoundException e) {
-                logMetacat.info("No replica found. Continuing.");
-                
-            }
-            
-            // no local replica, get a replica
-            if ( object == null ) {
-                // session should be null to use the default certificate
-                // location set in the Certificate manager
-                object = mn.getReplica(thisNodeSession, pid);
-                logMetacat.info("MNodeService.getReplica() called for identifier "
-                                + pid.getValue());
-
-            }
-
-        } catch (InvalidToken e) {            
-            String msg = "Could not retrieve object to replicate (InvalidToken): "+ e.getMessage();
-            failure = new ServiceFailure("2151", msg);
-            setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
-            logMetacat.error(msg);
-            throw new ServiceFailure("2151", msg);
-
-        } catch (NotFound e) {
-            String msg = "Could not retrieve object to replicate (NotFound): "+ e.getMessage();
-            failure = new ServiceFailure("2151", msg);
-            setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
-            logMetacat.error(msg);
-            throw new ServiceFailure("2151", msg);
-
-        } catch (NotAuthorized e) {
-            String msg = "Could not retrieve object to replicate (NotAuthorized): "+ e.getMessage();
-            failure = new ServiceFailure("2151", msg);
-            setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
-            logMetacat.error(msg);
-            throw new ServiceFailure("2151", msg);
-        } catch (NotImplemented e) {
-            String msg = "Could not retrieve object to replicate (mn.getReplica NotImplemented): "+ e.getMessage();
-            failure = new ServiceFailure("2151", msg);
-            setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
-            logMetacat.error(msg);
-            throw new ServiceFailure("2151", msg);
-        } catch (ServiceFailure e) {
-            String msg = "Could not retrieve object to replicate (ServiceFailure): "+ e.getMessage();
-            failure = new ServiceFailure("2151", msg);
-            setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
-            logMetacat.error(msg);
-            throw new ServiceFailure("2151", msg);
-        } catch (InsufficientResources e) {
-            String msg = "Could not retrieve object to replicate (InsufficientResources): "+ e.getMessage();
-            failure = new ServiceFailure("2151", msg);
-            setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
-            logMetacat.error(msg);
-            throw new ServiceFailure("2151", msg);
-        }
-
-        // verify checksum on the object, if supported
-        if (object.markSupported()) {
-            Checksum givenChecksum = sysmeta.getChecksum();
-            Checksum computedChecksum = null;
-            try {
-                computedChecksum = ChecksumUtil.checksum(object, givenChecksum.getAlgorithm());
-                object.reset();
-
-            } catch (Exception e) {
-                String msg = "Error computing checksum on replica: " + e.getMessage();
-                logMetacat.error(msg);
-                ServiceFailure sf = new ServiceFailure("2151", msg);
-                sf.initCause(e);
-                setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, sf);
-                throw sf;
-            }
-            if (!givenChecksum.getValue().equals(computedChecksum.getValue())) {
-                logMetacat.error("Given    checksum for " + pid.getValue() + 
-                    "is " + givenChecksum.getValue());
-                logMetacat.error("Computed checksum for " + pid.getValue() + 
-                    "is " + computedChecksum.getValue());
-                String msg = "Computed checksum does not match declared checksum";
+            } catch (InvalidToken e) {            
+                String msg = "Could not retrieve object to replicate (InvalidToken): "+ e.getMessage();
                 failure = new ServiceFailure("2151", msg);
                 setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
+                logMetacat.error(msg);
+                throw new ServiceFailure("2151", msg);
+
+            } catch (NotFound e) {
+                String msg = "Could not retrieve object to replicate (NotFound): "+ e.getMessage();
+                failure = new ServiceFailure("2151", msg);
+                setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
+                logMetacat.error(msg);
+                throw new ServiceFailure("2151", msg);
+
+            } catch (NotAuthorized e) {
+                String msg = "Could not retrieve object to replicate (NotAuthorized): "+ e.getMessage();
+                failure = new ServiceFailure("2151", msg);
+                setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
+                logMetacat.error(msg);
+                throw new ServiceFailure("2151", msg);
+            } catch (NotImplemented e) {
+                String msg = "Could not retrieve object to replicate (mn.getReplica NotImplemented): "+ e.getMessage();
+                failure = new ServiceFailure("2151", msg);
+                setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
+                logMetacat.error(msg);
+                throw new ServiceFailure("2151", msg);
+            } catch (ServiceFailure e) {
+                String msg = "Could not retrieve object to replicate (ServiceFailure): "+ e.getMessage();
+                failure = new ServiceFailure("2151", msg);
+                setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
+                logMetacat.error(msg);
+                throw new ServiceFailure("2151", msg);
+            } catch (InsufficientResources e) {
+                String msg = "Could not retrieve object to replicate (InsufficientResources): "+ e.getMessage();
+                failure = new ServiceFailure("2151", msg);
+                setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
+                logMetacat.error(msg);
                 throw new ServiceFailure("2151", msg);
             }
-        }
 
-        // add it to local store
-        Identifier retPid;
-        try {
-            // skip the MN.create -- this mutates the system metadata and we don't want it to
-            if ( localId == null ) {
-                // TODO: this will fail if we already "know" about the identifier
-            	// FIXME: see https://redmine.dataone.org/issues/2572
-                retPid = super.create(session, pid, object, sysmeta);
-                result = (retPid.getValue().equals(pid.getValue()));
+            // verify checksum on the object, if supported
+            logMetacat.info("MNodeService.replicate - the class of object inputstream is "+object.getClass().getCanonicalName()+". Does it support the reset method? The answer is "+object.markSupported());
+
+            // add it to local store
+            Identifier retPid;
+            try {
+                // skip the MN.create -- this mutates the system metadata and we don't want it to
+                if ( localId == null ) {
+                    // TODO: this will fail if we already "know" about the identifier
+                    // FIXME: see https://redmine.dataone.org/issues/2572
+                    objectExists(pid);
+                    retPid = super.create(session, pid, object, sysmeta);
+                    result = (retPid.getValue().equals(pid.getValue()));
+                }
+                
+            } catch (Exception e) {
+                String msg = "Could not save object to local store (" + e.getClass().getName() + "): " + e.getMessage();
+                failure = new ServiceFailure("2151", msg);
+                setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
+                logMetacat.error(msg);
+                throw new ServiceFailure("2151", msg);
+                
             }
-            
-        } catch (Exception e) {
-            String msg = "Could not save object to local store (" + e.getClass().getName() + "): " + e.getMessage();
-            failure = new ServiceFailure("2151", msg);
-            setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.FAILED, failure);
-            logMetacat.error(msg);
-            throw new ServiceFailure("2151", msg);
-            
+        } finally {
+            IOUtils.closeQuietly(object);
         }
+        
 
         // finish by setting the replication status
         setReplicationStatus(thisNodeSession, pid, nodeId, ReplicationStatus.COMPLETED, null);
         return result;
 
+    }
+    
+    /*
+     * If the given node supports v2 replication.
+     */
+    private boolean supportV2Replication(Node node) throws InvalidRequest {
+        return supportVersionReplication(node, "v2");
+    }
+    
+    /*
+     * If the given node support the the given version replication. Return true if it does.
+     */
+    private boolean supportVersionReplication(Node node, String version) throws InvalidRequest{
+        boolean support = false;
+        if(node == null) {
+            throw new InvalidRequest("2153", "There is no capacity information about the node in the replicate.");
+        } else {
+            Services services = node.getServices();
+            if(services == null) {
+                throw new InvalidRequest("2153", "Can't get replica from a node which doesn't have the replicate service.");
+            } else {
+               List<Service> list = services.getServiceList();
+               if(list == null) {
+                   throw new InvalidRequest("2153", "Can't get replica from a node which doesn't have the replicate service.");
+               } else {
+                   for(Service service : list) {
+                       if(service != null && service.getName() != null && service.getName().equals("MNReplication") && 
+                               service.getVersion() != null && service.getVersion().equalsIgnoreCase(version) && service.getAvailable() == true ) {
+                           support = true;
+                           
+                       }
+                   }
+               }
+            }
+        }
+        return support;
     }
 
     /**
@@ -712,18 +1185,29 @@ public class MNodeService extends D1NodeService
         InvalidRequest, NotImplemented {
 
         Checksum checksum = null;
-
+        String serviceFailure = "1410";
+        String notFound = "1420";
+        //Checkum only handles the pid, not sid
+        checkV1SystemMetaPidExist(pid, serviceFailure, "The checksum for the object specified by "+pid.getValue()+" couldn't be returned ",  notFound, 
+                "The object specified by "+pid.getValue()+" does not exist at this node.");
         InputStream inputStream = get(session, pid);
 
         try {
             checksum = ChecksumUtil.checksum(inputStream, algorithm);
-
         } catch (NoSuchAlgorithmException e) {
             throw new ServiceFailure("1410", "The checksum for the object specified by " + pid.getValue() + "could not be returned due to an internal error: "
                     + e.getMessage());
         } catch (IOException e) {
             throw new ServiceFailure("1410", "The checksum for the object specified by " + pid.getValue() + "could not be returned due to an internal error: "
                     + e.getMessage());
+        } finally {
+            if(inputStream != null) {
+                try {
+                    inputStream.close();
+                } catch (Exception e) {
+                   logMetacat.warn("MNodeService.getChecksum - can't close the input stream which got the object content since "+e.getMessage());
+                }
+            }
         }
 
         if (checksum == null) {
@@ -781,22 +1265,20 @@ public class MNodeService extends D1NodeService
      * @throws NotImplemented
      */
     @Override
-    public ObjectList listObjects(Session session, Date startTime, Date endTime, ObjectFormatIdentifier objectFormatId, Boolean replicaStatus, Integer start,
+    public ObjectList listObjects(Session session, Date startTime, Date endTime, ObjectFormatIdentifier objectFormatId, Identifier identifier, Boolean replicaStatus, Integer start,
             Integer count) throws NotAuthorized, InvalidRequest, NotImplemented, ServiceFailure, InvalidToken {
-
-        ObjectList objectList = null;
-
-        try {
-        	// safeguard against large requests
-            if (count == null || count > MAXIMUM_DB_RECORD_COUNT) {
-            	count = MAXIMUM_DB_RECORD_COUNT;
+        NodeReference nodeId = null;
+        if(!replicaStatus) {
+            //not include those objects whose authoritative node is not this mn
+            nodeId = new NodeReference();
+            try {
+                String currentNodeId = PropertyService.getInstance().getProperty("dataone.nodeId"); // return only pids for which this mn
+                nodeId.setValue(currentNodeId);
+            } catch(Exception e) {
+                throw new ServiceFailure("1580", e.getMessage());
             }
-            objectList = IdentifierManager.getInstance().querySystemMetadata(startTime, endTime, objectFormatId, replicaStatus, start, count);
-        } catch (Exception e) {
-            throw new ServiceFailure("1580", "Error querying system metadata: " + e.getMessage());
         }
-
-        return objectList;
+        return super.listObjects(session, startTime, endTime, objectFormatId, identifier, nodeId, start, count);
     }
 
     /**
@@ -807,11 +1289,11 @@ public class MNodeService extends D1NodeService
      * @throws ServiceFailure
      * @throws NotAuthorized
      * @throws InvalidRequest
-     * @throws NotImplemented
+     * @throws NotImplemented - not thrown by this implementation
      */
     @Override
     public Node getCapabilities() 
-        throws NotImplemented, ServiceFailure {
+        throws ServiceFailure {
 
         String nodeName = null;
         String nodeId = null;
@@ -820,47 +1302,43 @@ public class MNodeService extends D1NodeService
         String nodeDesc = null;
         String nodeTypeString = null;
         NodeType nodeType = null;
-        String mnCoreServiceVersion = null;
-        String mnReadServiceVersion = null;
-        String mnAuthorizationServiceVersion = null;
-        String mnStorageServiceVersion = null;
-        String mnReplicationServiceVersion = null;
+        List<String> mnCoreServiceVersions = null;
+        List<String> mnReadServiceVersions = null;
+        List<String> mnAuthorizationServiceVersions = null;
+        List<String> mnStorageServiceVersions = null;
+        List<String> mnReplicationServiceVersions = null;
+        List<String> mnPackageServiceVersions = null;
+        List<String> mnQueryServiceVersions = null;
+        List<String> mnViewServiceVersions = null;
 
         boolean nodeSynchronize = false;
         boolean nodeReplicate = false;
-        boolean mnCoreServiceAvailable = false;
-        boolean mnReadServiceAvailable = false;
-        boolean mnAuthorizationServiceAvailable = false;
-        boolean mnStorageServiceAvailable = false;
-        boolean mnReplicationServiceAvailable = false;
+        List<String> mnCoreServiceAvailables = null;
+        List<String> mnReadServiceAvailables = null;
+        List<String> mnAuthorizationServiceAvailables = null;
+        List<String> mnStorageServiceAvailables = null;
+        List<String> mnReplicationServiceAvailables = null;
+        List<String> mnPackageServiceAvailables = null;
+        List<String> mnQueryServiceAvailables = null;
+        List<String> mnViewServiceAvailables = null;
+        Vector<String> allowedSubmitters = null;
 
         try {
             // get the properties of the node based on configuration information
-            nodeName = PropertyService.getProperty("dataone.nodeName");
-            nodeId = PropertyService.getProperty("dataone.nodeId");
-            subject = PropertyService.getProperty("dataone.subject");
-            contactSubject = PropertyService.getProperty("dataone.contactSubject");
-            nodeDesc = PropertyService.getProperty("dataone.nodeDescription");
-            nodeTypeString = PropertyService.getProperty("dataone.nodeType");
+            nodeName = Settings.getConfiguration().getString("dataone.nodeName");
+            nodeId = Settings.getConfiguration().getString("dataone.nodeId");
+            subject = Settings.getConfiguration().getString("dataone.subject");
+            contactSubject = Settings.getConfiguration().getString("dataone.contactSubject");
+            nodeDesc = Settings.getConfiguration().getString("dataone.nodeDescription");
+            nodeTypeString = Settings.getConfiguration().getString("dataone.nodeType");
             nodeType = NodeType.convert(nodeTypeString);
-            nodeSynchronize = new Boolean(PropertyService.getProperty("dataone.nodeSynchronize")).booleanValue();
-            nodeReplicate = new Boolean(PropertyService.getProperty("dataone.nodeReplicate")).booleanValue();
-
-            mnCoreServiceVersion = PropertyService.getProperty("dataone.mnCore.serviceVersion");
-            mnReadServiceVersion = PropertyService.getProperty("dataone.mnRead.serviceVersion");
-            mnAuthorizationServiceVersion = PropertyService.getProperty("dataone.mnAuthorization.serviceVersion");
-            mnStorageServiceVersion = PropertyService.getProperty("dataone.mnStorage.serviceVersion");
-            mnReplicationServiceVersion = PropertyService.getProperty("dataone.mnReplication.serviceVersion");
-
-            mnCoreServiceAvailable = new Boolean(PropertyService.getProperty("dataone.mnCore.serviceAvailable")).booleanValue();
-            mnReadServiceAvailable = new Boolean(PropertyService.getProperty("dataone.mnRead.serviceAvailable")).booleanValue();
-            mnAuthorizationServiceAvailable = new Boolean(PropertyService.getProperty("dataone.mnAuthorization.serviceAvailable")).booleanValue();
-            mnStorageServiceAvailable = new Boolean(PropertyService.getProperty("dataone.mnStorage.serviceAvailable")).booleanValue();
-            mnReplicationServiceAvailable = new Boolean(PropertyService.getProperty("dataone.mnReplication.serviceAvailable")).booleanValue();
+            nodeSynchronize = new Boolean(Settings.getConfiguration().getString("dataone.nodeSynchronize")).booleanValue();
+            nodeReplicate = new Boolean(Settings.getConfiguration().getString("dataone.nodeReplicate")).booleanValue();
+            allowedSubmitters = AuthUtil.getAllowedSubmitters();
 
             // Set the properties of the node based on configuration information and
             // calls to current status methods
-            String serviceName = SystemUtil.getSecureContextURL() + "/" + PropertyService.getProperty("dataone.serviceName");
+            String serviceName = SystemUtil.getContextURL() + "/" + PropertyService.getProperty("dataone.serviceName");
             Node node = new Node();
             node.setBaseURL(serviceName + "/" + nodeTypeString);
             node.setDescription(nodeDesc);
@@ -897,36 +1375,132 @@ public class MNodeService extends D1NodeService
             // services: MNAuthorization, MNCore, MNRead, MNReplication, MNStorage
             Services services = new Services();
 
-            Service sMNCore = new Service();
-            sMNCore.setName("MNCore");
-            sMNCore.setVersion(mnCoreServiceVersion);
-            sMNCore.setAvailable(mnCoreServiceAvailable);
-
-            Service sMNRead = new Service();
-            sMNRead.setName("MNRead");
-            sMNRead.setVersion(mnReadServiceVersion);
-            sMNRead.setAvailable(mnReadServiceAvailable);
-
-            Service sMNAuthorization = new Service();
-            sMNAuthorization.setName("MNAuthorization");
-            sMNAuthorization.setVersion(mnAuthorizationServiceVersion);
-            sMNAuthorization.setAvailable(mnAuthorizationServiceAvailable);
-
-            Service sMNStorage = new Service();
-            sMNStorage.setName("MNStorage");
-            sMNStorage.setVersion(mnStorageServiceVersion);
-            sMNStorage.setAvailable(mnStorageServiceAvailable);
-
-            Service sMNReplication = new Service();
-            sMNReplication.setName("MNReplication");
-            sMNReplication.setVersion(mnReplicationServiceVersion);
-            sMNReplication.setAvailable(mnReplicationServiceAvailable);
-
-            services.addService(sMNRead);
-            services.addService(sMNCore);
-            services.addService(sMNAuthorization);
-            services.addService(sMNStorage);
-            services.addService(sMNReplication);
+            mnCoreServiceVersions = Settings.getConfiguration().getList("dataone.mnCore.serviceVersion");
+            mnCoreServiceAvailables = Settings.getConfiguration().getList("dataone.mnCore.serviceAvailable");
+            if(mnCoreServiceVersions != null && mnCoreServiceAvailables != null && mnCoreServiceVersions.size() == mnCoreServiceAvailables.size()) {
+                for(int i=0; i<mnCoreServiceVersions.size(); i++) {
+                    String version = mnCoreServiceVersions.get(i);
+                    boolean available = new Boolean(mnCoreServiceAvailables.get(i)).booleanValue();
+                    Service sMNCore = new Service();
+                    sMNCore.setName("MNCore");
+                    sMNCore.setVersion(version);
+                    sMNCore.setAvailable(available);
+                    services.addService(sMNCore);
+                }
+            }
+            
+            mnReadServiceVersions = Settings.getConfiguration().getList("dataone.mnRead.serviceVersion");
+            mnReadServiceAvailables = Settings.getConfiguration().getList("dataone.mnRead.serviceAvailable");
+            if(mnReadServiceVersions != null && mnReadServiceAvailables != null && mnReadServiceVersions.size()==mnReadServiceAvailables.size()) {
+                for(int i=0; i<mnReadServiceVersions.size(); i++) {
+                    String version = mnReadServiceVersions.get(i);
+                    boolean available = new Boolean(mnReadServiceAvailables.get(i)).booleanValue();
+                    Service sMNRead = new Service();
+                    sMNRead.setName("MNRead");
+                    sMNRead.setVersion(version);
+                    sMNRead.setAvailable(available);
+                    services.addService(sMNRead);
+                }
+            }
+           
+            mnAuthorizationServiceVersions = Settings.getConfiguration().getList("dataone.mnAuthorization.serviceVersion");
+            mnAuthorizationServiceAvailables = Settings.getConfiguration().getList("dataone.mnAuthorization.serviceAvailable");
+            if(mnAuthorizationServiceVersions != null && mnAuthorizationServiceAvailables != null && mnAuthorizationServiceVersions.size()==mnAuthorizationServiceAvailables.size()) {
+                for(int i=0; i<mnAuthorizationServiceVersions.size(); i++) {
+                    String version = mnAuthorizationServiceVersions.get(i);
+                    boolean available = new Boolean(mnAuthorizationServiceAvailables.get(i)).booleanValue();
+                    Service sMNAuthorization = new Service();
+                    sMNAuthorization.setName("MNAuthorization");
+                    sMNAuthorization.setVersion(version);
+                    sMNAuthorization.setAvailable(available);
+                    services.addService(sMNAuthorization);
+                }
+            }
+           
+            mnStorageServiceVersions = Settings.getConfiguration().getList("dataone.mnStorage.serviceVersion");
+            mnStorageServiceAvailables = Settings.getConfiguration().getList("dataone.mnStorage.serviceAvailable");
+            if(mnStorageServiceVersions != null && mnStorageServiceAvailables != null && mnStorageServiceVersions.size() == mnStorageServiceAvailables.size()) {
+                for(int i=0; i<mnStorageServiceVersions.size(); i++) {
+                    String version = mnStorageServiceVersions.get(i);
+                    boolean available = new Boolean(mnStorageServiceAvailables.get(i)).booleanValue();
+                    Service sMNStorage = new Service();
+                    sMNStorage.setName("MNStorage");
+                    sMNStorage.setVersion(version);
+                    sMNStorage.setAvailable(available);
+                    if (allowedSubmitters != null && !allowedSubmitters.isEmpty()) {
+                        ServiceMethodRestriction createRestriction = new ServiceMethodRestriction();
+                        createRestriction.setMethodName("create");
+                        ServiceMethodRestriction updateRestriction = new ServiceMethodRestriction();
+                        updateRestriction.setMethodName("update");
+                        for (int j=0; j<allowedSubmitters.size(); j++) {
+                            Subject allowedSubject = new Subject();
+                            allowedSubject.setValue(allowedSubmitters.elementAt(j));
+                            createRestriction.addSubject(allowedSubject);
+                            updateRestriction.addSubject(allowedSubject);
+                        }
+                        sMNStorage.addRestriction(createRestriction);
+                        sMNStorage.addRestriction(updateRestriction);
+                    }
+                    services.addService(sMNStorage);
+                }
+            }
+            
+            mnReplicationServiceVersions = Settings.getConfiguration().getList("dataone.mnReplication.serviceVersion");
+            mnReplicationServiceAvailables = Settings.getConfiguration().getList("dataone.mnReplication.serviceAvailable");
+            if(mnReplicationServiceVersions != null && mnReplicationServiceAvailables != null && mnReplicationServiceVersions.size() == mnReplicationServiceAvailables.size()) {
+                for (int i=0; i<mnReplicationServiceVersions.size(); i++) {
+                    String version = mnReplicationServiceVersions.get(i);
+                    boolean available = new Boolean(mnReplicationServiceAvailables.get(i)).booleanValue();
+                    Service sMNReplication = new Service();
+                    sMNReplication.setName("MNReplication");
+                    sMNReplication.setVersion(version);
+                    sMNReplication.setAvailable(available);
+                    services.addService(sMNReplication);
+                }
+            }
+            
+            mnPackageServiceVersions = Settings.getConfiguration().getList("dataone.mnPackage.serviceVersion");
+            mnPackageServiceAvailables = Settings.getConfiguration().getList("dataone.mnPackage.serviceAvailable");
+            if(mnPackageServiceVersions != null && mnPackageServiceAvailables != null && mnPackageServiceVersions.size() == mnPackageServiceAvailables.size()) {
+                for (int i=0; i<mnPackageServiceVersions.size(); i++) {
+                    String version = mnPackageServiceVersions.get(i);
+                    boolean available = new Boolean(mnPackageServiceAvailables.get(i)).booleanValue();
+                    Service sMNPakcage = new Service();
+                    sMNPakcage.setName("MNPackage");
+                    sMNPakcage.setVersion(version);
+                    sMNPakcage.setAvailable(available);
+                    services.addService(sMNPakcage);
+                }
+            }
+            
+            mnQueryServiceVersions = Settings.getConfiguration().getList("dataone.mnQuery.serviceVersion");
+            mnQueryServiceAvailables = Settings.getConfiguration().getList("dataone.mnQuery.serviceAvailable");
+            if(mnQueryServiceVersions != null && mnQueryServiceAvailables != null && mnQueryServiceVersions.size() == mnQueryServiceAvailables.size()) {
+                for (int i=0; i<mnQueryServiceVersions.size(); i++) {
+                    String version = mnQueryServiceVersions.get(i);
+                    boolean available = new Boolean(mnQueryServiceAvailables.get(i)).booleanValue();
+                    Service sMNQuery = new Service();
+                    sMNQuery.setName("MNQuery");
+                    sMNQuery.setVersion(version);
+                    sMNQuery.setAvailable(available);
+                    services.addService(sMNQuery);
+                }
+            }
+            
+            mnViewServiceVersions = Settings.getConfiguration().getList("dataone.mnView.serviceVersion");
+            mnViewServiceAvailables = Settings.getConfiguration().getList("dataone.mnView.serviceAvailable");
+            if(mnViewServiceVersions != null && mnViewServiceAvailables != null && mnViewServiceVersions.size() == mnViewServiceAvailables.size()) {
+                for (int i=0; i<mnViewServiceVersions.size(); i++) {
+                    String version = mnViewServiceVersions.get(i);
+                    boolean available = new Boolean(mnViewServiceAvailables.get(i)).booleanValue();
+                    Service sMNView = new Service();
+                    sMNView.setName("MNView");
+                    sMNView.setVersion(version);
+                    sMNView.setAvailable(available);
+                    services.addService(sMNView);
+                }
+            }
+            
             node.setServices(services);
 
             // Set the schedule for synchronization
@@ -946,72 +1520,41 @@ public class MNodeService extends D1NodeService
             node.setSynchronization(synchronization);
 
             node.setType(nodeType);
+            
+            //add properties such as the Metacat version and upgrade status
+            String upgradeStatus = Settings.getConfiguration().getString("configutil.upgrade.status");
+            if (upgradeStatus != null && !upgradeStatus.trim().equals("")) {
+                Property statusProperty = new Property();
+                statusProperty.setKey("upgrade_status");
+                statusProperty.setValue(upgradeStatus);
+                node.addProperty(statusProperty);
+            }
+            try {
+                String metacatVersion = MetacatVersion.getVersionFromDB();
+                if (metacatVersion != null && !metacatVersion.trim().equals("")) {
+                    Property versionProperty = new Property();
+                    versionProperty.setKey("metacat_version");
+                    versionProperty.setValue(metacatVersion);
+                    node.addProperty(versionProperty);
+                }
+            } catch (SQLException e) {
+                logMetacat.warn("MNodeService.getCapabilities - couldn't get the metacat version since " + e.getMessage());
+            }
+            
             return node;
 
         } catch (PropertyNotFoundException pnfe) {
             String msg = "MNodeService.getCapabilities(): " + "property not found: " + pnfe.getMessage();
             logMetacat.error(msg);
             throw new ServiceFailure("2162", msg);
+        } catch (MetacatUtilException me) {
+            String msg = "MNodeService.getCapabilities(): " + "can't get the allowed submitters list since " + me.getMessage();
+            logMetacat.error(msg);
+            throw new ServiceFailure("2162", msg);
         }
     }
 
-    /**
-     * Returns the number of operations that have been serviced by the node 
-     * over time periods of one and 24 hours.
-     * 
-     * @param session - the Session object containing the credentials for the Subject
-     * @param period - An ISO8601 compatible DateTime range specifying the time 
-     *                 range for which to return operation statistics.
-     * @param requestor - Limit to operations performed by given requestor identity.
-     * @param event -  Enumerated value indicating the type of event being examined
-     * @param format - Limit to events involving objects of the specified format
-     * 
-     * @return the desired log records
-     * 
-     * @throws InvalidToken
-     * @throws ServiceFailure
-     * @throws NotAuthorized
-     * @throws InvalidRequest
-     * @throws NotImplemented
-     */
-    public MonitorList getOperationStatistics(Session session, Date startTime, 
-        Date endTime, Subject requestor, Event event, ObjectFormatIdentifier formatId)
-        throws NotImplemented, ServiceFailure, NotAuthorized, InsufficientResources, UnsupportedType {
-
-        MonitorList monitorList = new MonitorList();
-
-        try {
-
-            // get log records first
-            Log logs = getLogRecords(session, startTime, endTime, event, null, 0, null);
-
-            // TODO: aggregate by day or hour -- needs clarification
-            int count = 1;
-            for (LogEntry logEntry : logs.getLogEntryList()) {
-                Identifier pid = logEntry.getIdentifier();
-                Date logDate = logEntry.getDateLogged();
-                // if we are filtering by format
-                if (formatId != null) {
-                    SystemMetadata sysmeta = HazelcastService.getInstance().getSystemMetadataMap().get(pid);
-                    if (!sysmeta.getFormatId().getValue().equals(formatId.getValue())) {
-                        // does not match
-                        continue;
-                    }
-                }
-                MonitorInfo item = new MonitorInfo();
-                item.setCount(count);
-                item.setDate(new java.sql.Date(logDate.getTime()));
-                monitorList.addMonitorInfo(item);
-
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new ServiceFailure("2081", "Could not retrieve statistics: " + e.getMessage());
-        }
-
-        return monitorList;
-
-    }
+    
 
     /**
      * A callback method used by a CN to indicate to a MN that it cannot 
@@ -1030,29 +1573,18 @@ public class MNodeService extends D1NodeService
         throws NotImplemented, ServiceFailure, NotAuthorized {
 
         String localId;
-        Identifier pid;
-        if ( syncFailed.getPid() != null ) {
-            pid = new Identifier();
-            pid.setValue(syncFailed.getPid());
-            boolean allowed;
-            
-            //are we allowed? only CNs
-            try {
-                allowed = isAdminAuthorized(session);
-                if ( !allowed ){
-                    throw new NotAuthorized("2162", 
-                            "Not allowed to call synchronizationFailed() on this node.");
-                }
-            } catch (InvalidToken e) {
-                throw new NotAuthorized("2162", 
-                        "Not allowed to call synchronizationFailed() on this node.");
-
-            }
-            
-        } else {
+        
+        if ( syncFailed.getPid() == null ) {
             throw new ServiceFailure("2161", "The identifier cannot be null.");
-
         }
+        Identifier pid = new Identifier();
+        pid.setValue(syncFailed.getPid());
+        boolean allowed;
+            
+        //are we allowed? only CNs
+        D1AuthHelper authDel = new D1AuthHelper(request, pid, "2162","2161");
+        authDel.doCNOnlyAuthorization(session);
+
         
         try {
             localId = IdentifierManager.getInstance().getLocalId(pid.getValue());
@@ -1060,19 +1592,23 @@ public class MNodeService extends D1NodeService
             throw new ServiceFailure("2161", "The identifier specified by " + 
                     syncFailed.getPid() + " was not found on this node.");
 
+        } catch (SQLException e) {
+            throw new ServiceFailure("2161", "Couldn't identify the local id of the identifier specified by " + 
+                    syncFailed.getPid() + " since "+e.getMessage());
         }
         // TODO: update the CN URL below when the CNRead.SynchronizationFailed
         // method is changed to include the URL as a parameter
-        logMetacat.debug("Synchronization for the object identified by " + 
+        logMetacat.warn("Synchronization for the object identified by " + 
                 pid.getValue() + " failed from " + syncFailed.getNodeId() + 
-                " Logging the event to the Metacat EventLog as a 'syncFailed' event.");
+                " with message: " + syncFailed.getDescription() + 
+                ". Logging the event to the Metacat EventLog as a 'syncFailed' event.");
         // TODO: use the event type enum when the SYNCHRONIZATION_FAILED event is added
         String principal = Constants.SUBJECT_PUBLIC;
         if (session != null && session.getSubject() != null) {
-          principal = session.getSubject().getValue();
+            principal = session.getSubject().getValue();
         }
         try {
-          EventLog.getInstance().log(request.getRemoteAddr(), request.getHeader("User-Agent"), principal, localId, "synchronization_failed");
+            EventLog.getInstance().log(request.getRemoteAddr(), request.getHeader("User-Agent"), principal, localId, "synchronization_failed");
         } catch (Exception e) {
             throw new ServiceFailure("2161", "Could not log the error for: " + pid.getValue());
         }
@@ -1087,13 +1623,13 @@ public class MNodeService extends D1NodeService
      */
     @Override
     public InputStream getReplica(Session session, Identifier pid) 
-        throws NotAuthorized, NotImplemented, ServiceFailure, InvalidToken {
+        throws NotAuthorized, NotImplemented, ServiceFailure, InvalidToken, NotFound {
 
         logMetacat.info("MNodeService.getReplica() called.");
 
         // cannot be called by public
         if (session == null) {
-        	throw new InvalidToken("2183", "No session was provided.");
+            throw new InvalidToken("2183", "No session was provided.");
         }
         
         logMetacat.info("MNodeService.getReplica() called with parameters: \n" +
@@ -1101,7 +1637,6 @@ public class MNodeService extends D1NodeService
              "\tIdentifier           = " + pid.getValue());
 
         InputStream inputStream = null; // bytes to be returned
-        handler = new MetacatHandler(new Timer());
         boolean allowed = false;
         String localId; // the metacat docid for the pid
 
@@ -1109,9 +1644,12 @@ public class MNodeService extends D1NodeService
         try {
             localId = IdentifierManager.getInstance().getLocalId(pid.getValue());
         } catch (McdbDocNotFoundException e) {
-            throw new ServiceFailure("2181", "The object specified by " + 
+            throw new NotFound("2185", "The object specified by " + 
                     pid.getValue() + " does not exist at this node.");
             
+        } catch (SQLException e) {
+            throw new ServiceFailure("2181", "The local id of the object specified by " + 
+                    pid.getValue() + " couldn't be identified since "+e.getMessage());
         }
 
         Subject targetNodeSubject = session.getSubject();
@@ -1124,7 +1662,7 @@ public class MNodeService extends D1NodeService
                 + e1.getMessage());
             
         } catch (NotFound e1) {
-            throw new ServiceFailure("2181", "Could not determine if node is authorized: " 
+            throw new NotFound("2185", "Could not find the object "+pid.getValue()+" in this node - " 
                     + e1.getMessage());
 
         } catch (InvalidRequest e1) {
@@ -1138,18 +1676,32 @@ public class MNodeService extends D1NodeService
 
         // if the person is authorized, perform the read
         if (allowed) {
+            SystemMetadata sm = MNodeService.getInstance(request).getSystemMetadata(session, pid);
+            ObjectFormat objectFormat = null;
+            String type = null;
             try {
-                inputStream = MetacatHandler.read(localId);
+                objectFormat = ObjectFormatCache.getInstance().getFormat(sm.getFormatId());
+            } catch (BaseException be) {
+                logMetacat.warn("MNodeService.getReplica - could not lookup ObjectFormat for: " + sm.getFormatId(), be);
+            }
+            if (objectFormat != null) {
+                type = objectFormat.getFormatType();
+            }
+            logMetacat.info("MNodeService.getReplica - the data type for the object " + pid.getValue() + " is " + type);
+            try {
+                inputStream = MetacatHandler.read(localId, type);
             } catch (Exception e) {
-                throw new ServiceFailure("1020", "The object specified by " + 
+                throw new ServiceFailure("2181", "The object specified by " + 
                     pid.getValue() + "could not be returned due to error: " + e.getMessage());
             }
+        } else {
+            throw new NotAuthorized("2182", "The pid "+pid.getValue()+" is not authorized to be read by the client.");
         }
 
         // if we fail to set the input stream
         if (inputStream == null) {
             throw new ServiceFailure("2181", "The object specified by " + 
-                pid.getValue() + "does not exist at this node.");
+                pid.getValue() + " can't be returned from the node.");
         }
 
         // log the replica event
@@ -1162,11 +1714,11 @@ public class MNodeService extends D1NodeService
 
         return inputStream;
     }
-
+    
     /**
      * A method to notify the Member Node that the authoritative copy of 
      * system metadata on the Coordinating Nodes has changed.
-     * 
+     *
      * @param session   Session information that contains the identity of the 
      *                  calling user as retrieved from the X.509 certificate 
      *                  which must be traceable to the CILogon service.
@@ -1182,87 +1734,204 @@ public class MNodeService extends D1NodeService
         long serialVersion, Date dateSysMetaLastModified) 
         throws NotImplemented, ServiceFailure, NotAuthorized, InvalidRequest,
         InvalidToken {
+        boolean needCheckAuthoriativeNode = true; 
+        return systemMetadataChanged(needCheckAuthoriativeNode, session, pid,serialVersion, dateSysMetaLastModified);
+    }
+
+    /**
+     * A method to notify the Member Node that the authoritative copy of 
+     * system metadata on the Coordinating Nodes has changed.
+     * @param needCheckAuthoriativeNode  this is for the dataone version 2. In the
+     * version 2, there are two scenarios:
+     * 1. If the node is the authoritative node, it only accepts serial version and replica list.
+     * 2. If the node is a replica, it accepts everything.
+     * For the v1, api, the parameter should be false. 
+     * @param session   Session information that contains the identity of the 
+     *                  calling user as retrieved from the X.509 certificate 
+     *                  which must be traceable to the CILogon service.
+     * @param serialVersion   The serialVersion of the system metadata
+     * @param dateSysMetaLastModified  The time stamp for when the system metadata was changed
+     * @throws NotImplemented
+     * @throws ServiceFailure
+     * @throws NotAuthorized
+     * @throws InvalidRequest
+     * @throws InvalidToken
+     */
+    public boolean systemMetadataChanged(boolean needCheckAuthoriativeNode, Session session, Identifier pid,
+        long serialVersion, Date dateSysMetaLastModified) 
+        throws NotImplemented, ServiceFailure, NotAuthorized, InvalidRequest,
+        InvalidToken {
         
+        if(isReadOnlyMode()) {
+            throw new InvalidRequest("1334", "The Metacat member node is on the read-only mode and your request can't be fulfiled. Please try again later.");
+        }
         // cannot be called by public
         if (session == null) {
-        	throw new InvalidToken("2183", "No session was provided.");
+            throw new InvalidToken("1332", "No session was provided.");
         }
 
+        String serviceFailureCode = "1333";
+        Identifier sid = getPIDForSID(pid, serviceFailureCode);
+        if(sid != null) {
+            pid = sid;
+        }
+        
         SystemMetadata currentLocalSysMeta = null;
         SystemMetadata newSysMeta = null;
-        CNode cn = D1Client.getCN();
-        NodeList nodeList = null;
-        Subject callingSubject = null;
-        boolean allowed = false;
         
-        // are we allowed to call this?
-        callingSubject = session.getSubject();
-        nodeList = cn.listNodes();
-        
-        for(Node node : nodeList.getNodeList()) {
-            // must be a CN
-            if ( node.getType().equals(NodeType.CN)) {
-               List<Subject> subjectList = node.getSubjectList();
-               // the calling subject must be in the subject list
-               if ( subjectList.contains(callingSubject)) {
-                   allowed = true;
-                   
-               }
-               
-            }
-        }
-        
-        if (!allowed ) {
-            String msg = "The subject identified by " + callingSubject.getValue() +
-              " is not authorized to call this service.";
-            throw new NotAuthorized("1331", msg);
-            
-        }
-        
-        // compare what we have locally to what is sent in the change notification
+        D1AuthHelper authDel = new D1AuthHelper(request, pid, "1331", serviceFailureCode);
+        authDel.doCNOnlyAuthorization(session);
         try {
-            currentLocalSysMeta = HazelcastService.getInstance().getSystemMetadataMap().get(pid);
-             
-        } catch (RuntimeException e) {
-            String msg = "SystemMetadata for pid " + pid.getValue() +
-              " couldn't be updated because it couldn't be found locally: " +
-              e.getMessage();
-            logMetacat.error(msg);
-            ServiceFailure sf = new ServiceFailure("1333", msg);
-            sf.initCause(e);
-            throw sf; 
-        }
+            HazelcastService.getInstance().getSystemMetadataMap().lock(pid);
         
-        if (currentLocalSysMeta.getSerialVersion().longValue() < serialVersion ) {
+            // compare what we have locally to what is sent in the change notification
             try {
-                newSysMeta = cn.getSystemMetadata(null, pid);
-            } catch (NotFound e) {
-                // huh? you just said you had it
-            	String msg = "On updating the local copy of system metadata " + 
-                "for pid " + pid.getValue() +", the CN reports it is not found." +
-                " The error message was: " + e.getMessage();
-                logMetacat.error(msg);
-                ServiceFailure sf = new ServiceFailure("1333", msg);
-                sf.initCause(e);
-                throw sf;
-            }
-            
-            // update the local copy of system metadata for the pid
-            try {
-                HazelcastService.getInstance().getSystemMetadataMap().put(newSysMeta.getIdentifier(), newSysMeta);
-                // submit for indexing
-                HazelcastService.getInstance().getIndexQueue().add(newSysMeta);
-                logMetacat.info("Updated local copy of system metadata for pid " +
-                    pid.getValue() + " after change notification from the CN.");
-                
+                currentLocalSysMeta = HazelcastService.getInstance().getSystemMetadataMap().get(pid);
+                 
             } catch (RuntimeException e) {
                 String msg = "SystemMetadata for pid " + pid.getValue() +
-                  " couldn't be updated: " +
+                  " couldn't be updated because it couldn't be found locally: " +
                   e.getMessage();
                 logMetacat.error(msg);
                 ServiceFailure sf = new ServiceFailure("1333", msg);
                 sf.initCause(e);
-                throw sf;
+                throw sf; 
+            }
+            
+            if(currentLocalSysMeta == null) {
+                throw new InvalidRequest("1334", "We can't find the system metadata in the node for the id "+pid.getValue());
+            }
+            if (currentLocalSysMeta.getSerialVersion().longValue() <= serialVersion ) {
+                try {
+                    this.cn = D1Client.getCN();
+                    newSysMeta = cn.getSystemMetadata(null, pid);
+                } catch (NotFound e) {
+                    // huh? you just said you had it
+                	String msg = "On updating the local copy of system metadata " + 
+                    "for pid " + pid.getValue() +", the CN reports it is not found." +
+                    " The error message was: " + e.getMessage();
+                    logMetacat.error(msg);
+                    //ServiceFailure sf = new ServiceFailure("1333", msg);
+                    InvalidRequest sf = new InvalidRequest("1334", msg);
+                    sf.initCause(e);
+                    throw sf;
+                }
+                
+                //check about the sid in the system metadata
+                Identifier newSID = newSysMeta.getSeriesId();
+                if(newSID != null) {
+                    if (!isValidIdentifier(newSID)) {
+                        throw new InvalidRequest("1334", "The series identifier in the new system metadata is invalid.");
+                    }
+                    Identifier currentSID = currentLocalSysMeta.getSeriesId();
+                    if( currentSID != null && currentSID.getValue() != null) {
+                        if(!newSID.getValue().equals(currentSID.getValue())) {
+                            //newSID doesn't match the currentSID. The newSID shouldn't be used.
+                            try {
+                                if(IdentifierManager.getInstance().identifierExists(newSID.getValue())) {
+                                    throw new InvalidRequest("1334", "The series identifier "+newSID.getValue()+" in the new system metadata has been used by another object.");
+                                }
+                            } catch (SQLException sql) {
+                                throw new ServiceFailure("1333", "Couldn't determine if the SID "+newSID.getValue()+" in the system metadata exists in the node since "+sql.getMessage());
+                            }
+                            
+                        }
+                    } else {
+                        //newSID shouldn't be used
+                        try {
+                            if(IdentifierManager.getInstance().identifierExists(newSID.getValue())) {
+                                throw new InvalidRequest("1334", "The series identifier "+newSID.getValue()+" in the new system metadata has been used by another object.");
+                            }
+                        } catch (SQLException sql) {
+                            throw new ServiceFailure("1333", "Couldn't determine if the SID "+newSID.getValue()+" in the system metadata exists in the node since "+sql.getMessage());
+                        }
+                    }
+                }
+                // update the local copy of system metadata for the pid
+                try {
+                    if(needCheckAuthoriativeNode) {
+                        //this is for the v2 api.
+                        if(isAuthoritativeNode(pid)) {
+                            //this is the authoritative node, so we only accept replica and serial version
+                            logMetacat.debug("MNodeService.systemMetadataChanged - this is the authoritative node for the pid "+pid.getValue());
+                            List<Replica> replicas = newSysMeta.getReplicaList();
+                            newSysMeta = currentLocalSysMeta;
+                            newSysMeta.setSerialVersion(new BigInteger((new Long(serialVersion)).toString()));
+                            newSysMeta.setReplicaList(replicas);
+                        } else {
+                            //we need to archive the object in the replica node
+                            logMetacat.debug("MNodeService.systemMetadataChanged - this is NOT the authoritative node for the pid "+pid.getValue());
+                            logMetacat.debug("MNodeService.systemMetadataChanged - the new value of archive is "+newSysMeta.getArchived()+" for the pid "+pid.getValue());
+                            logMetacat.debug("MNodeService.systemMetadataChanged - the local value of archive is "+currentLocalSysMeta.getArchived()+" for the pid "+pid.getValue());
+                            if (newSysMeta.getArchived() != null && newSysMeta.getArchived() == true  && 
+                                    ((currentLocalSysMeta.getArchived() != null && currentLocalSysMeta.getArchived() == false ) || currentLocalSysMeta.getArchived() == null)){
+                                logMetacat.debug("MNodeService.systemMetadataChanged - start to archive object "+pid.getValue());
+                                boolean logArchive = false;
+                                boolean needUpdateModificationDate = false;
+                                try {
+                                    archiveObject(logArchive, session, pid, newSysMeta, needUpdateModificationDate);
+                                } catch (NotFound e) {
+                                    throw new InvalidRequest("1334", "Can't find the pid "+pid.getValue()+" for archive.");
+                                }
+                                
+                            } else if((newSysMeta.getArchived() == null || newSysMeta.getArchived() == false) && (currentLocalSysMeta.getArchived() != null && currentLocalSysMeta.getArchived() == true )) {
+                                throw new InvalidRequest("1334", "The pid "+pid.getValue()+" has been archived and it can't be reset to false.");
+                            }
+                        }
+                    }
+                    HazelcastService.getInstance().getSystemMetadataMap().put(newSysMeta.getIdentifier(), newSysMeta);
+                    logMetacat.info("Updated local copy of system metadata for pid " +
+                        pid.getValue() + " after change notification from the CN.");
+                    
+                    // TODO: consider inspecting the change for archive
+                    // see: https://projects.ecoinformatics.org/ecoinfo/issues/6417
+    //                if (newSysMeta.getArchived() != null && newSysMeta.getArchived().booleanValue()) {
+    //                	try {
+    //						this.archive(session, newSysMeta.getIdentifier());
+    //					} catch (NotFound e) {
+    //						// do we care? nothing to do about it now
+    //						logMetacat.error(e.getMessage(), e);
+    //					}
+    //                }
+                    
+                } catch (RuntimeException e) {
+                    String msg = "SystemMetadata for pid " + pid.getValue() +
+                      " couldn't be updated: " +
+                      e.getMessage();
+                    logMetacat.error(msg);
+                    ServiceFailure sf = new ServiceFailure("1333", msg);
+                    sf.initCause(e);
+                    throw sf;
+                }
+                
+                try {
+                    String localId = IdentifierManager.getInstance().getLocalId(pid.getValue());
+                    if (ipAddress == null) {
+                        request.getRemoteAddr();
+                    }
+                    if (userAgent == null) {
+                        userAgent = request.getHeader("User-Agent");
+                    }
+                    EventLog.getInstance().log(ipAddress, userAgent, session.getSubject().getValue(), 
+                            localId, "updateSystemMetadata");
+                } catch (Exception e) {
+                    // do nothing, no localId to log with
+                    logMetacat.warn("MNodeService.systemMetadataChanged - Could not log 'updateSystemMetadata' event because no localId was found for pid: " + pid.getValue());
+                } 
+                
+               
+            }
+        } finally {
+            HazelcastService.getInstance().getSystemMetadataMap().unlock(pid);
+        }
+        
+        if (currentLocalSysMeta.getSerialVersion().longValue() <= serialVersion ) {
+            // submit for indexing
+            try {
+                boolean isSysmetaChangeOnly = true;
+                MetacatSolrIndex.getInstance().submit(newSysMeta.getIdentifier(), newSysMeta,  isSysmetaChangeOnly, null, false);
+            } catch (Exception e) {
+                logMetacat.error("Could not submit changed systemMetadata for indexing, pid: " + newSysMeta.getIdentifier().getValue(), e);
             }
         }
         
@@ -1291,18 +1960,51 @@ public class MNodeService extends D1NodeService
                     status, failure);
             
         } catch (InvalidToken e) {
-        	String msg = "Could not set the replication status for " + pid.getValue() + " on the CN (InvalidToken): " + e.getMessage();
+            String msg = "Could not set the replication status for " + pid.getValue() + " on the CN (InvalidToken): " + e.getMessage();
             logMetacat.error(msg);
-        	throw new ServiceFailure("2151",
+            throw new ServiceFailure("2151",
                     msg);
-            
+
         } catch (NotFound e) {
-        	String msg = "Could not set the replication status for " + pid.getValue() + " on the CN (NotFound): " + e.getMessage();
+            String msg = "Could not set the replication status for " + pid.getValue() + " on the CN (NotFound): " + e.getMessage();
             logMetacat.error(msg);
-        	throw new ServiceFailure("2151",
+            throw new ServiceFailure("2151",
                     msg);
-            
+
         }
+    }
+    
+    private SystemMetadata makePublicIfNot(SystemMetadata sysmeta, Identifier pid, boolean needIndex) throws ServiceFailure, InvalidToken, NotFound, NotImplemented, InvalidRequest {
+    	// check if it is publicly readable
+		boolean isPublic = false;
+		Subject publicSubject = new Subject();
+		publicSubject.setValue(Constants.SUBJECT_PUBLIC);
+		Session publicSession = new Session();
+		publicSession.setSubject(publicSubject);
+		AccessRule publicRule = new AccessRule();
+		publicRule.addPermission(Permission.READ);
+		publicRule.addSubject(publicSubject);
+		
+		// see if we need to add the rule
+		try {
+			isPublic = this.isAuthorized(publicSession, pid, Permission.READ);
+		} catch (NotAuthorized na) {
+			// well, certainly not authorized for public read!
+		}
+		if (!isPublic) {
+		    if(sysmeta.getAccessPolicy() != null) {
+		        sysmeta.getAccessPolicy().addAllow(publicRule);
+		    } else {
+		        AccessPolicy policy = new AccessPolicy();
+		        policy.addAllow(publicRule);
+		        sysmeta.setAccessPolicy(policy);
+		    }
+			if (needIndex) {
+			    this.updateSystemMetadata(sysmeta);
+			}
+		}
+		
+		return sysmeta;
     }
 
 	@Override
@@ -1325,8 +2027,8 @@ public class MNodeService extends D1NodeService
 		} else if (scheme.equalsIgnoreCase(DOI_SCHEME)) {
 			// generate a DOI
 			try {
-				identifier = DOIService.getInstance().generateDOI();
-			} catch (EZIDException e) {
+				identifier = DOIServiceFactory.getDOIService().generateDOI();
+			} catch (Exception e) {
 				ServiceFailure sf = new ServiceFailure("2191", "Could not generate DOI: " + e.getMessage());
 				sf.initCause(e);
 				throw sf;
@@ -1351,130 +2053,10 @@ public class MNodeService extends D1NodeService
 		return identifier;
 	}
 
-	@Override
-	public boolean isAuthorized(Identifier pid, Permission permission)
-			throws ServiceFailure, InvalidRequest, InvalidToken, NotFound,
-			NotAuthorized, NotImplemented {
-
-		return isAuthorized(null, pid, permission);
-	}
+	
 
 	@Override
-	public boolean systemMetadataChanged(Identifier pid, long serialVersion, Date dateSysMetaLastModified)
-			throws InvalidToken, ServiceFailure, NotAuthorized, NotImplemented,
-			InvalidRequest {
-
-		return systemMetadataChanged(null, pid, serialVersion, dateSysMetaLastModified);
-	}
-
-	@Override
-	public Log getLogRecords(Date fromDate, Date toDate, Event event, String pidFilter,
-			Integer start, Integer count) throws InvalidRequest, InvalidToken,
-			NotAuthorized, NotImplemented, ServiceFailure {
-
-		return getLogRecords(null, fromDate, toDate, event, pidFilter, start, count);
-	}
-
-	@Override
-	public DescribeResponse describe(Identifier pid) throws InvalidToken,
-			NotAuthorized, NotImplemented, ServiceFailure, NotFound {
-
-		return describe(null, pid);
-	}
-
-	@Override
-	public InputStream get(Identifier pid) throws InvalidToken, NotAuthorized,
-			NotImplemented, ServiceFailure, NotFound, InsufficientResources {
-
-		return get(null, pid);
-	}
-
-	@Override
-	public Checksum getChecksum(Identifier pid, String algorithm)
-			throws InvalidRequest, InvalidToken, NotAuthorized, NotImplemented,
-			ServiceFailure, NotFound {
-
-		return getChecksum(null, pid, algorithm);
-	}
-
-	@Override
-	public SystemMetadata getSystemMetadata(Identifier pid)
-			throws InvalidToken, NotAuthorized, NotImplemented, ServiceFailure,
-			NotFound {
-
-		return getSystemMetadata(null, pid);
-	}
-
-	@Override
-	public ObjectList listObjects(Date startTime, Date endTime,
-			ObjectFormatIdentifier objectFormatId, Boolean replicaStatus, Integer start,
-			Integer count) throws InvalidRequest, InvalidToken, NotAuthorized,
-			NotImplemented, ServiceFailure {
-
-		return listObjects(null, startTime, endTime, objectFormatId, replicaStatus, start, count);
-	}
-
-	@Override
-	public boolean synchronizationFailed(SynchronizationFailed syncFailed)
-			throws InvalidToken, NotAuthorized, NotImplemented, ServiceFailure {
-
-		return synchronizationFailed(null, syncFailed);
-	}
-
-	@Override
-	public InputStream getReplica(Identifier pid) throws InvalidToken,
-			NotAuthorized, NotImplemented, ServiceFailure, NotFound,
-			InsufficientResources {
-
-		return getReplica(null, pid);
-	}
-
-	@Override
-	public boolean replicate(SystemMetadata sysmeta, NodeReference sourceNode)
-			throws NotImplemented, ServiceFailure, NotAuthorized,
-			InvalidRequest, InvalidToken, InsufficientResources,
-			UnsupportedType {
-
-		return replicate(null, sysmeta, sourceNode);
-	}
-
-	@Override
-	public Identifier create(Identifier pid, InputStream object,
-			SystemMetadata sysmeta) throws IdentifierNotUnique,
-			InsufficientResources, InvalidRequest, InvalidSystemMetadata,
-			InvalidToken, NotAuthorized, NotImplemented, ServiceFailure,
-			UnsupportedType {
-
-		return create(null, pid, object, sysmeta);
-	}
-
-	@Override
-	public Identifier delete(Identifier pid) throws InvalidToken,
-			ServiceFailure, NotAuthorized, NotFound, NotImplemented {
-
-		return delete(null, pid);
-	}
-
-	@Override
-	public Identifier generateIdentifier(String scheme, String fragment)
-			throws InvalidToken, ServiceFailure, NotAuthorized, NotImplemented,
-			InvalidRequest {
-
-		return generateIdentifier(null, scheme, fragment);
-	}
-
-	@Override
-	public Identifier update(Identifier pid, InputStream object,
-			Identifier newPid, SystemMetadata sysmeta) throws IdentifierNotUnique,
-			InsufficientResources, InvalidRequest, InvalidSystemMetadata,
-			InvalidToken, NotAuthorized, NotImplemented, ServiceFailure,
-			UnsupportedType, NotFound {
-
-		return update(null, pid, object, newPid, sysmeta);
-	}
-
-	@Override
-	public QueryEngineDescription getQueryEngineDescription(String engine)
+	public QueryEngineDescription getQueryEngineDescription(Session session, String engine)
 			throws InvalidToken, ServiceFailure, NotAuthorized, NotImplemented,
 			NotFound {
 	    if(engine != null && engine.equals(EnabledQueryEngines.PATHQUERYENGINE)) {
@@ -1522,7 +2104,7 @@ public class MNodeService extends D1NodeService
 	}
 
 	@Override
-	public QueryEngineList listQueryEngines() throws InvalidToken,
+	public QueryEngineList listQueryEngines(Session session) throws InvalidToken,
 			ServiceFailure, NotAuthorized, NotImplemented {
 		QueryEngineList qel = new QueryEngineList();
 		//qel.addQueryEngine(EnabledQueryEngines.PATHQUERYENGINE);
@@ -1535,15 +2117,20 @@ public class MNodeService extends D1NodeService
 	}
 
 	@Override
-	public InputStream query(String engine, String query) throws InvalidToken,
+	public InputStream query(Session session, String engine, String query) throws InvalidToken,
 			ServiceFailure, NotAuthorized, InvalidRequest, NotImplemented,
 			NotFound {
-	    String user = Constants.SUBJECT_PUBLIC;
-        String[] groups= null;
-        Set<Subject> subjects = null;
-        if (session != null) {
-            user = session.getSubject().getValue();
-            subjects = AuthUtils.authorizedClientSubjects(session);
+        Set<Subject> subjects = getQuerySubjects(session);
+        boolean isMNadmin = isMNOrCNAdminQuery(session);
+		if (engine != null && engine.equals(EnabledQueryEngines.PATHQUERYENGINE)) {
+		    if(!EnabledQueryEngines.getInstance().isEnabled(EnabledQueryEngines.PATHQUERYENGINE)) {
+                throw new NotImplemented("0000", "MNodeService.query - the query engine "+engine +" hasn't been implemented or has been disabled.");
+            }
+		    String user = Constants.SUBJECT_PUBLIC;
+	        String[] groups= null;
+	        if (session != null) {
+	            user = session.getSubject().getValue();
+	        }
             if (subjects != null) {
                 List<String> groupList = new ArrayList<String>();
                 for (Subject subject: subjects) {
@@ -1551,22 +2138,8 @@ public class MNodeService extends D1NodeService
                 }
                 groups = groupList.toArray(new String[0]);
             }
-        } else {
-            //add the public user subject to the set 
-            Subject subject = new Subject();
-            subject.setValue(Constants.SUBJECT_PUBLIC);
-            subjects = new HashSet<Subject>();
-            subjects.add(subject);
-        }
-        //System.out.println("====== user is "+user);
-        //System.out.println("====== groups are "+groups);
-		if (engine != null && engine.equals(EnabledQueryEngines.PATHQUERYENGINE)) {
-		    if(!EnabledQueryEngines.getInstance().isEnabled(EnabledQueryEngines.PATHQUERYENGINE)) {
-                throw new NotImplemented("0000", "MNodeService.query - the query engine "+engine +" hasn't been implemented or has been disabled.");
-            }
 			try {
 				DBQuery queryobj = new DBQuery();
-				
 				String results = queryobj.performPathquery(query, user, groups);
 				ContentTypeByteArrayInputStream ctbais = new ContentTypeByteArrayInputStream(results.getBytes(MetaCatServlet.DEFAULT_ENCODING));
 				ctbais.setContentType("text/xml");
@@ -1580,23 +2153,91 @@ public class MNodeService extends D1NodeService
 		    if(!EnabledQueryEngines.getInstance().isEnabled(EnabledQueryEngines.SOLRENGINE)) {
 		        throw new NotImplemented("0000", "MNodeService.query - the query engine "+engine +" hasn't been implemented or has been disabled.");
 		    }
-		    logMetacat.info("The query is ==================================== \n"+query);
+		    logMetacat.info("MNodeService.query - the solr query is === " + query);
 		    try {
 		        
-                return MetacatSolrIndex.getInstance().query(query, subjects);
+                return MetacatSolrIndex.getInstance().query(query, subjects, isMNadmin);
             } catch (Exception e) {
                 // TODO Auto-generated catch block
+                e.printStackTrace();
                 throw new ServiceFailure("Solr server error", e.getMessage());
             } 
 		}
 		return null;
 	}
 	
+	
+	/**
+	 * Handle the query sent by the http post method
+	 * @param session  identity information of the requester
+	 * @param engine  the query engine will be used. Now we only support solr
+	 * @param params  the query parameters with key/value pairs
+	 * @return
+	 * @throws InvalidToken
+	 * @throws ServiceFailure
+	 * @throws NotAuthorized
+	 * @throws InvalidRequest
+	 * @throws NotImplemented
+	 * @throws NotFound
+	 */
+    public InputStream postQuery(Session session, String engine, HashMap<String, String[]> params) throws InvalidToken,
+            ServiceFailure, NotAuthorized, InvalidRequest, NotImplemented, NotFound {
+        Set<Subject> subjects = getQuerySubjects(session);
+        boolean isMNadmin = isMNOrCNAdminQuery(session);
+        if (engine != null && engine.equals(EnabledQueryEngines.SOLRENGINE)) {
+            if(!EnabledQueryEngines.getInstance().isEnabled(EnabledQueryEngines.SOLRENGINE)) {
+                throw new NotImplemented("0000", "MNodeService.query - the query engine "+engine +" hasn't been implemented or has been disabled.");
+            }
+            try {
+                SolrParams solrParams = new MultiMapSolrParams(params);
+                return MetacatSolrIndex.getInstance().query(solrParams, subjects, isMNadmin, SolrRequest.METHOD.POST);
+            } catch (Exception e) {
+                throw new ServiceFailure("2821", "Solr server error: "+ e.getMessage());
+            } 
+        } else {
+            throw new NotImplemented ("2824", "The query engine "+engine+" specified on the request isn't supported by the http post method. Now we only support the solr engine.");
+        }
+    }
+    
+    /*
+     * Extract all subjects from a given session. If the session is null, the public subject will be returned.
+     */
+    private Set<Subject> getQuerySubjects(Session session) {
+        Set<Subject> subjects = null;
+        if (session != null) {
+             subjects = AuthUtils.authorizedClientSubjects(session);
+        } else {
+            //add the public user subject to the set 
+            Subject subject = new Subject();
+            subject.setValue(Constants.SUBJECT_PUBLIC);
+            subjects = new HashSet<Subject>();
+            subjects.add(subject);
+        }
+        return subjects;
+    }
+    
+  /*
+   * Determine if the given session is a local admin or cn subject.
+   */
+    private boolean isMNOrCNAdminQuery(Session session) throws ServiceFailure {
+        boolean isMNadmin= false;
+        if (session != null && session.getSubject() != null) {
+            D1AuthHelper authDel = new D1AuthHelper(request, null, "2822", "2821");
+            try {
+                authDel.doAdminAuthorization(session);
+                logMetacat.debug("MNodeService.isMNOrCNAdminQuery - this is a mn/cn admin session, it will bypass the access control rules.");
+                isMNadmin=true;//bypass access rules since it is the admin
+            } catch (NotAuthorized e) {
+                logMetacat.debug("MNodeService.isMNOrCNAdminQuery - this is NOT a mn/cn admin session, it can't bypass the access control rules.");
+            }
+        }
+        return isMNadmin;
+    }
+	
 	/**
 	 * Given an existing Science Metadata PID, this method mints a DOI
 	 * and updates the original object "publishing" the update with the DOI.
 	 * This includes updating the ORE map that describes the Science Metadata+data.
-	 * TODO: ensure all referenced objects allow public read
 	 * 
 	 * @see https://projects.ecoinformatics.org/ecoinfo/issues/6014
 	 * 
@@ -1613,16 +2254,24 @@ public class MNodeService extends D1NodeService
 	 * @throws UnsupportedType 
 	 * @throws IdentifierNotUnique 
 	 */
-	public Identifier publish(Session session, Identifier originalIdentifier) throws InvalidToken, ServiceFailure, NotAuthorized, NotImplemented, InvalidRequest, NotFound, IdentifierNotUnique, UnsupportedType, InsufficientResources, InvalidSystemMetadata {
+	public Identifier publish(Session session, Identifier originalIdentifier) throws InvalidToken, 
+	ServiceFailure, NotAuthorized, NotImplemented, InvalidRequest, NotFound, IdentifierNotUnique, 
+	UnsupportedType, InsufficientResources, InvalidSystemMetadata, IOException {
 		
-		
+	    String serviceFailureCode = "1030";
+	    Identifier sid = getPIDForSID(originalIdentifier, serviceFailureCode);
+	    if(sid != null) {
+	        originalIdentifier = sid;
+	    }
 		// get the original SM
 		SystemMetadata originalSystemMetadata = this.getSystemMetadata(session, originalIdentifier);
 
-		// make copy of it
-		SystemMetadata sysmeta = new SystemMetadata();
+		// make copy of it using the marshaller to ensure DEEP copy
+		SystemMetadata sysmeta = null;
 		try {
-			BeanUtils.copyProperties(sysmeta, originalSystemMetadata);
+			ByteArrayOutputStream baos = new ByteArrayOutputStream();
+			TypeMarshaller.marshalTypeToOutputStream(originalSystemMetadata, baos);
+			sysmeta = TypeMarshaller.unmarshalTypeFromStream(SystemMetadata.class, new ByteArrayInputStream(baos.toByteArray()));
 		} catch (Exception e) {
 			// report as service failure
 			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
@@ -1638,8 +2287,33 @@ public class MNodeService extends D1NodeService
 		sysmeta.setObsoletes(originalIdentifier);
 		sysmeta.setObsoletedBy(null);
 		
-		// get the bytes
-		InputStream inputStream = this.get(session, originalIdentifier);
+		// ensure it is publicly readable
+		sysmeta = makePublicIfNot(sysmeta, originalIdentifier, false);
+		
+		//Get the bytes
+		InputStream inputStream = null;		
+		boolean isScienceMetadata = isScienceMetadata(sysmeta);
+		//If it's a science metadata doc, we want to update the packageId first
+		if(isScienceMetadata){
+		    boolean isEML = false;
+		    //Get the formatId
+            ObjectFormatIdentifier objFormatId = originalSystemMetadata.getFormatId();
+            String formatId = objFormatId.getValue();
+            //For all EML formats
+            if(formatId.contains("ecoinformatics.org/eml")){
+                logMetacat.debug("~~~~~~~~~~~~~~~~~~~~~~MNodeService.publish - the object " + originalIdentifier.getValue() + " with format id " + formatId + " is an eml document.");
+                isEML = true;
+            } else {
+                logMetacat.debug("MNodeService.publish - the object " + originalIdentifier.getValue() + " with format id " + formatId + " is NOT an eml document.");
+            }
+			InputStream originalObject = this.get(session, originalIdentifier);
+			
+			//Edit the science metadata with the new package Id (EML)
+			inputStream = editScienceMetadata(session, originalObject, originalIdentifier, newIdentifier, isEML, sysmeta);
+		}
+		else{
+			inputStream = this.get(session, originalIdentifier);
+		}
 		
 		// update the object
 		this.update(session, originalIdentifier, inputStream, newIdentifier, sysmeta);
@@ -1657,40 +2331,32 @@ public class MNodeService extends D1NodeService
 				oreInputStream = this.get(session, potentialOreIdentifier);
 			} catch (NotFound nf) {
 				// this is probably okay for many sci meta data docs
-				logMetacat.warn("No potential ORE map found for: " + potentialOreIdentifier.getValue());
-				// try the SOLR index
-				List<Identifier> potentialOreIdentifiers = this.lookupOreFor(originalIdentifier, false);
-				if (potentialOreIdentifiers != null) {
-					potentialOreIdentifier = potentialOreIdentifiers.get(0);
-					try {
-						oreInputStream = this.get(session, potentialOreIdentifier);
-					} catch (NotFound nf2) {
-						// this is probably okay for many sci meta data docs
-						logMetacat.warn("No potential ORE map found for: " + potentialOreIdentifier.getValue());
-					}
+				logMetacat.warn("No potential ORE map found for: " + potentialOreIdentifier.getValue()+" by the name convention.");
+				potentialOreIdentifier = getNewestORE(session, originalIdentifier);
+				if (potentialOreIdentifier != null) {
+				    try {
+	                    oreInputStream = this.get(session, potentialOreIdentifier);
+	                } catch (NotFound nf2) {
+	                    // this is probably okay for many sci meta data docs
+	                    logMetacat.warn("No potential ORE map found for: " + potentialOreIdentifier.getValue());
+	                }
 				}
 			}
 			if (oreInputStream != null) {
+			    logMetacat.info("MNodeService.publish - we find the old ore document "+potentialOreIdentifier+" for the metacat object "+originalIdentifier);
 				Identifier newOreIdentifier = MNodeService.getInstance(request).generateIdentifier(session, MNodeService.UUID_SCHEME, null);
-	
-				Map<Identifier, Map<Identifier, List<Identifier>>> resourceMapStructure = ResourceMapFactory.getInstance().parseResourceMap(oreInputStream);
-				Map<Identifier, List<Identifier>> sciMetaMap = resourceMapStructure.get(potentialOreIdentifier);
-				List<Identifier> dataIdentifiers = sciMetaMap.get(originalIdentifier);
-				
-				// TODO: ensure all data package objects allow public read
-	
-				// reconstruct the ORE with the new identifiers
-				sciMetaMap.remove(originalIdentifier);
-				sciMetaMap.put(newIdentifier, dataIdentifiers);
-				
-				ResourceMap resourceMap = ResourceMapFactory.getInstance().createResourceMap(newOreIdentifier, sciMetaMap);
-				String resourceMapString = ResourceMapFactory.getInstance().serializeResourceMap(resourceMap);
+				ResourceMapModifier modifier = new ResourceMapModifier(potentialOreIdentifier, oreInputStream, newOreIdentifier);
+				ByteArrayOutputStream out = new ByteArrayOutputStream();
+		        modifier.replaceObsoletedId(originalIdentifier, newIdentifier, out, session.getSubject());
+				String resourceMapString = out.toString("UTF-8");
 				
 				// get the original ORE SM and update the values
 				SystemMetadata originalOreSysMeta = this.getSystemMetadata(session, potentialOreIdentifier);
 				SystemMetadata oreSysMeta = new SystemMetadata();
 				try {
-					BeanUtils.copyProperties(oreSysMeta, originalOreSysMeta);
+					ByteArrayOutputStream baos = new ByteArrayOutputStream();
+					TypeMarshaller.marshalTypeToOutputStream(originalOreSysMeta, baos);
+					oreSysMeta = TypeMarshaller.unmarshalTypeFromStream(SystemMetadata.class, new ByteArrayInputStream(baos.toByteArray()));
 				} catch (Exception e) {
 					// report as service failure
 					ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
@@ -1703,8 +2369,30 @@ public class MNodeService extends D1NodeService
 				oreSysMeta.setObsoletedBy(null);
 				oreSysMeta.setSize(BigInteger.valueOf(resourceMapString.getBytes("UTF-8").length));
 				oreSysMeta.setChecksum(ChecksumUtil.checksum(resourceMapString.getBytes("UTF-8"), oreSysMeta.getChecksum().getAlgorithm()));
+				oreSysMeta.setFileName("resourceMap_" + newOreIdentifier.getValue() + ".rdf.xml");
 				
+				// ensure ORE is publicly readable
+                oreSysMeta = makePublicIfNot(oreSysMeta, potentialOreIdentifier, false);
+                List<Identifier> dataIdentifiers = modifier.getSubjectsOfDocumentedBy(newIdentifier);
+				// ensure all data objects allow public read
+                if (enforcePublicEntirePackageInPublish) {
+    				List<String> pidsToSync = new ArrayList<String>();
+    				for (Identifier dataId: dataIdentifiers) {
+    			            SystemMetadata dataSysMeta = this.getSystemMetadata(session, dataId);
+    			            dataSysMeta = makePublicIfNot(dataSysMeta, dataId, true);
+    			            pidsToSync.add(dataId.getValue());
+    				    
+    				}
+    				SyncAccessPolicy sap = new SyncAccessPolicy();
+    				try {
+    					sap.sync(pidsToSync);
+    				} catch (Exception e) {
+    					// ignore
+    					logMetacat.warn("Error attempting to sync access for data objects when publishing package");
+    				}
+                }
 				// save the updated ORE
+				logMetacat.info("MNodeService.publish - the new ore document is "+newOreIdentifier.getValue()+" for the doi "+newIdentifier.getValue());
 				this.update(
 						session, 
 						potentialOreIdentifier, 
@@ -1721,7 +2409,7 @@ public class MNodeService extends D1NodeService
 	
 					@SuppressWarnings("unused")
 					SystemMetadata extraSysMeta = SystemMetadataFactory.createSystemMetadata(newLocalId, true, false);
-					// should be done generating the ORE here
+					// should be done generating the ORE here, and the same permissions were used from the metadata object
 					
 				} catch (Exception e) {
 					// oops, guess there was a problem - no package for you
@@ -1738,35 +2426,86 @@ public class MNodeService extends D1NodeService
 			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
 			sf.initCause(e);
 			throw sf;
-		} catch (OREException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (URISyntaxException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (OREParserException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (ORESerialiserException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
 		} catch (NoSuchAlgorithmException e) {
 			// report as service failure
 			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
 			sf.initCause(e);
 			throw sf;
-		}
+		} catch (SQLException e) {
+            // report as service failure
+            ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
+            sf.initCause(e);
+            throw sf;
+        }
 		
 		return newIdentifier;
 	}
+	
+	/**
+	   * Update a science metadata document with its new Identifier  
+	   * 
+	   * @param session - the Session object containing the credentials for the Subject
+	   * @param object - the InputStream for the XML object to be edited
+	   * @param pid - the Identifier of the XML object to be updated
+	   * @param newPid = the new Identifier to give to the modified XML doc
+	   * 
+	   * @return newObject - The InputStream for the modified XML object
+	   * 
+	   * @throws ServiceFailure
+	   * @throws IOException
+	   * @throws UnsupportedEncodingException
+	   * @throws InvalidToken
+	   * @throws NotAuthorized
+	   * @throws NotFound
+	   * @throws NotImplemented
+	   */
+	  public InputStream editScienceMetadata(Session session, InputStream object, Identifier pid, Identifier newPid, boolean isEML, SystemMetadata newSysmeta)
+	  	throws ServiceFailure, IOException, UnsupportedEncodingException, InvalidToken, NotAuthorized, NotFound, NotImplemented {
+	    
+		logMetacat.debug("D1NodeService.editScienceMetadata() called.");
+		
+		 InputStream newObject = null;
+		
+	    try{   	
+	    	//Get the root node of the XML document
+	    	byte[] xmlBytes  = IOUtils.toByteArray(object);
+	        String xmlStr = new String(xmlBytes, "UTF-8");
+	        
+	    	Document doc = XMLUtilities.getXMLReaderAsDOMDocument(new StringReader(xmlStr));
+		    org.w3c.dom.Node docNode = doc.getDocumentElement();
+
+	    	//For all EML formats
+		    if(isEML){
+		        //Update or add the id attribute
+		        XMLUtilities.addAttributeNodeToDOMTree(docNode, XPATH_EML_ID, newPid.getValue());
+		    }
+
+	        //The modified object InputStream
+		    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+		    Source xmlSource = new DOMSource(docNode);
+		    Result outputTarget = new StreamResult(outputStream);
+		    TransformerFactory.newInstance().newTransformer().transform(xmlSource, outputTarget);
+		    byte[] output = outputStream.toByteArray();
+		    Checksum checksum = ChecksumUtil.checksum(output, newSysmeta.getChecksum().getAlgorithm());
+		    newObject = new ByteArrayInputStream(output);
+		    newSysmeta.setChecksum(checksum);
+		    logMetacat.debug("MNNodeService.editScienceMetadata - the new checksum is "+checksum.getValue() +" with algorithm "+checksum.getAlgorithm()+" for the new pid "+newPid.getValue()+" which is published from the pid "+pid.getValue());
+	    } catch(TransformerException e) {
+	        throw new ServiceFailure("1030", "MNNodeService.editScienceMetadata(): " +
+	                "Could not update the ID in the XML document for " +
+	                "pid " + pid.getValue() +" : " + e.getMessage());
+	    } catch(IOException e){
+	        throw new ServiceFailure("1030", "MNNodeService.editScienceMetadata(): " +
+	                "Could not update the ID in the XML document for " +
+	                "pid " + pid.getValue() +" : " + e.getMessage());
+	    } catch(NoSuchAlgorithmException e) {
+	        throw new ServiceFailure("1030", "MNNodeService.editScienceMetadata(): " +
+	                "Could not update the ID in the XML document for " +
+	                "pid " + pid.getValue() +" since the checksum can't be computed : " + e.getMessage());
+	    }
+	    
+	    return newObject;
+	  }
 	
 	/**
 	 * Determines if we already have registered an ORE map for this package
@@ -1774,17 +2513,17 @@ public class MNodeService extends D1NodeService
 	 * @param guid of the EML/packaging object
 	 * @return list of resource map identifiers for the given pid
 	 */
-	public List<Identifier> lookupOreFor(Identifier guid, boolean includeObsolete) {
+	public List<Identifier> lookupOreFor(Session session, Identifier guid, boolean includeObsolete) {
 		// Search for the ORE if we can find it
 		String pid = guid.getValue();
 		List<Identifier> retList = null;
 		try {
-			String query = "fl=id,resourceMap&wt=xml&q=-obsoletedBy:*+resourceMap:*+id:\"" + pid + "\"";;
+			String query = "fl=id,resourceMap&wt=xml&q=-obsoletedBy:[* TO *]+resourceMap:[* TO *]+id:\"" + pid + "\"";
 			if (includeObsolete) {
-				query = "fl=id,resourceMap&wt=xml&q=resourceMap:*+id:\"" + pid + "\"";
+				query = "fl=id,resourceMap&wt=xml&q=resourceMap:[* TO *]+id:\"" + pid + "\"";
 			}
 			
-			InputStream results = this.query("solr", query);
+			InputStream results = this.query(session, "solr", query);
 			org.w3c.dom.Node rootNode = XMLUtilities.getXMLReaderAsDOMTreeRootNode(new InputStreamReader(results, "UTF-8"));
 			//String resultString = XMLUtilities.getDOMTreeAsString(rootNode);
 			org.w3c.dom.NodeList nodeList = XMLUtilities.getNodeListWithXPath(rootNode, "//arr[@name=\"resourceMap\"]/str");
@@ -1805,196 +2544,791 @@ public class MNodeService extends D1NodeService
 	}
 	
 	/**
-	 * Packages the given package in a Bagit collection for download
-	 * @param pid
-	 * @throws NotImplemented 
-	 * @throws NotFound 
-	 * @throws NotAuthorized 
-	 * @throws ServiceFailure 
-	 * @throws InvalidToken 
+	 * Get the newest ore id which integrates the given metadata pid
+	 * @param session  the subjects call the method
+	 * @param metadataPid  the metadata pid which be integrated. It is a pid
+	 * @return  the ore pid if we can find one; otherwise null will be returned
 	 */
-	public InputStream getPackage(Session session, Identifier pid) throws InvalidToken, ServiceFailure, NotAuthorized, NotFound, NotImplemented {
-		
-		InputStream bagInputStream = null;
-		BagFactory bagFactory = new BagFactory();
-		Bag bag = bagFactory.createBag();
-		
-		// track the temp files we use so we can delete them when finished
-		List<File> tempFiles = new ArrayList<File>();
-		
-		// the pids to include in the package
-		List<Identifier> packagePids = new ArrayList<Identifier>();
-		
-		// catch non-D1 service errors and throw as ServiceFailures
-		try {
-			
-			// find the package contents
-			SystemMetadata sysMeta = this.getSystemMetadata(session, pid);
-			if (ObjectFormatCache.getInstance().getFormat(sysMeta.getFormatId()).getFormatType().equals("RESOURCE")) {
-				InputStream oreInputStream = this.get(session, pid);
-				Map<Identifier, Map<Identifier, List<Identifier>>> resourceMapStructure = ResourceMapFactory.getInstance().parseResourceMap(oreInputStream);
-				packagePids.addAll(resourceMapStructure.keySet());
-				for (Map<Identifier, List<Identifier>> entries: resourceMapStructure.values()) {
-					packagePids.addAll(entries.keySet());
-					for (List<Identifier> dataPids: entries.values()) {
-						packagePids.addAll(dataPids);
-					}
-				}
-			} else {
-				// just the lone pid in this package
-				packagePids.add(pid);
-			}
-	
-			// track the pid-to-file mapping
-			StringBuffer pidMapping = new StringBuffer();
-			// loop through the package contents
-			for (Identifier entryPid: packagePids) {
-				SystemMetadata entrySysMeta = this.getSystemMetadata(session, entryPid);
-				String extension = ObjectFormatInfo.instance().getExtension(entrySysMeta.getFormatId().getValue());
-		        String prefix = entryPid.getValue();
-		        prefix = "entry";
-				File tempFile = File.createTempFile(prefix + "-", extension);
-				tempFiles.add(tempFile);
-				InputStream entryInputStream = this.get(session, entryPid);
-				IOUtils.copy(entryInputStream, new FileOutputStream(tempFile));
-				bag.addFileToPayload(tempFile);
-				pidMapping.append(entryPid.getValue() + "\t" + "data/" + tempFile.getName() + "\n");
-			}
-			
-			//add the the pid to data file map
-			File pidMappingFile = File.createTempFile("pid-mapping-", ".txt");
-			IOUtils.write(pidMapping.toString(), new FileOutputStream(pidMappingFile));
-			bag.addFileAsTag(pidMappingFile);
-			tempFiles.add(pidMappingFile);
-			
-			bag = bag.makeComplete();
-			
-			// TODO: consider using mangled-PID for filename
-			File bagFile = File.createTempFile("dataPackage-", ".zip");
-			
-			bag.setFile(bagFile);
-			ZipWriter zipWriter = new ZipWriter(bagFactory);
-			bag.write(zipWriter, bagFile);
-			bagFile = bag.getFile();
-			// use custom FIS that will delete the file when closed
-			bagInputStream = new DeleteOnCloseFileInputStream(bagFile);
-			// also mark for deletion on shutdown in case the stream is never closed
-			bagFile.deleteOnExit();
-			
-			// clean up other temp files
-			for (File tf: tempFiles) {
-				tf.delete();
-			}
-		} catch (IOException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (OREException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (URISyntaxException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (OREParserException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		}
-		
-		return bagInputStream;
-
+	private Identifier getNewestORE(Session session, Identifier metadataPid) throws InvalidToken, ServiceFailure, 
+	                                                                        NotAuthorized, NotFound, NotImplemented {
+	    Identifier potentialOreIdentifier = null;
+	    if (metadataPid != null && !metadataPid.getValue().trim().equals("")) {
+	        List<Identifier> potentialOreIdentifiers = this.lookupOreFor(session, metadataPid);
+	        if (potentialOreIdentifiers != null && potentialOreIdentifiers.size() >0) {
+	            int size = potentialOreIdentifiers.size();
+	            for (int i = size-1; i>=0; i--) {
+	                Identifier id = potentialOreIdentifiers.get(i);
+	                if (id != null && id.getValue() != null && !id.getValue().trim().equals("")) {
+	                    SystemMetadata sys = this.getSystemMetadata(session, id);
+	                    if(sys != null && sys.getObsoletedBy() == null) {
+	                        //found the non-obsoletedBy ore document.
+	                        logMetacat.debug("MNodeService.getNewestORE - found the ore map from the list when the index is " + i +
+	                                         " and its pid is " + id.getValue());
+	                        potentialOreIdentifier = id;
+	                        break;
+	                    }
+	                }
+	            }
+	        } else {
+	            logMetacat.warn("MNodeService.getNewestORE - No potential ORE map found for the metadata object" + metadataPid.getValue() + 
+	                            " by the solr query.");
+	        }
+	    }
+        return potentialOreIdentifier;
 	}
 	
 	/**
-	 * Get a rendered view of the object identified by pid.
-	 * Uses the registered format given by the format parameter.
-	 * Typically, this is structured HTML that can be styled with CSS.
-	 * @param session
-	 * @param pid
-	 * @param format
-	 * @return
-	 * @throws InvalidToken
-	 * @throws ServiceFailure
-	 * @throws NotAuthorized
-	 * @throws NotFound
-	 * @throws NotImplemented
-	 */
-	public InputStream getView(Session session, Identifier pid, String format) throws InvalidToken, ServiceFailure, NotAuthorized, NotFound, NotImplemented {
-		InputStream resultInputStream = null;
-		
-		SystemMetadata sysMeta = this.getSystemMetadata(session, pid);
-		InputStream object = this.get(session, pid);
+     * Determines if we already have registered an ORE map for this package
+     * NOTE: uses a solr query to locate OREs for the object
+     * @todo should be consolidate with the above method.
+     * @param guid of the EML/packaging object
+     */
+    private List<Identifier> lookupOreFor(Session session, Identifier guid) {
+        // Search for the ORE if we can find it
+        String pid = guid.getValue();
+        List<Identifier> retList = null;
+        try {
+            String query = "fl=id,resourceMap&wt=xml&q=id:\"" + pid + "\"";
+            InputStream results = this.query(session, "solr", query);
+            org.w3c.dom.Node rootNode = XMLUtilities.getXMLReaderAsDOMTreeRootNode(new InputStreamReader(results, "UTF-8"));
+            //String resultString = XMLUtilities.getDOMTreeAsString(rootNode);
+            org.w3c.dom.NodeList nodeList = XMLUtilities.getNodeListWithXPath(rootNode, "//arr[@name=\"resourceMap\"]/str");
+            if (nodeList != null && nodeList.getLength() > 0) {
+                retList = new ArrayList<Identifier>();
+                for (int i = 0; i < nodeList.getLength(); i++) {
+                    String found = nodeList.item(i).getFirstChild().getNodeValue();
+                    logMetacat.debug("MNodeService.lookupOreRor - found the resource map"+found);
+                    Identifier oreId = new Identifier();
+                    oreId.setValue(found);
+                    retList.add(oreId);
+                }
+            }
+        } catch (Exception e) {
+            logMetacat.error("Error checking for resourceMap[s] on pid " + pid + ". " + e.getMessage(), e);
+        }
+        
+        return retList;
+    }
 
-		try {
-			// can only transform metadata, really
-			ObjectFormat objectFormat = ObjectFormatCache.getInstance().getFormat(sysMeta.getFormatId());
-			if (objectFormat.getFormatType().equals("METADATA")) {
-				// transform
-				DBTransform transformer = new DBTransform();
-	            String documentContent = IOUtils.toString(object, "UTF-8");
-	            String sourceType = objectFormat.getFormatId().getValue();
-	            String targetType = "-//W3C//HTML//EN";
-	            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-	            Writer writer = new OutputStreamWriter(baos , "UTF-8");
-	            // TODO: include more params?
-	            Hashtable<String, String[]> params = new Hashtable<String, String[]>();
-	            String localId = null;
-				try {
-					localId = IdentifierManager.getInstance().getLocalId(pid.getValue());
-				} catch (McdbDocNotFoundException e) {
-					throw new NotFound("1020", e.getMessage());
-				}
-	            params.put("qformat", new String[] {format});	            
-	            params.put("docid", new String[] {localId});
-	            params.put("pid", new String[] {pid.getValue()});
-	            transformer.transformXMLDocument(
-	                    documentContent , 
-	                    sourceType, 
-	                    targetType , 
-	                    format, 
-	                    writer, 
-	                    params, 
-	                    null //sessionid
-	                    );
-	            
-	            // finally, get the HTML back
-	            resultInputStream = new ContentTypeByteArrayInputStream(baos.toByteArray());
-	            ((ContentTypeByteArrayInputStream) resultInputStream).setContentType("text/html");
-	
-			} else {
-				// just return the raw bytes
-				resultInputStream = object;
-			}
-		} catch (IOException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (PropertyNotFoundException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (SQLException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		} catch (ClassNotFoundException e) {
-			// report as service failure
-			ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
-			sf.initCause(e);
-			throw sf;
-		}
-		
-		return resultInputStream;
-		
-	}	
+    /**
+     * Returns a stream to a resource map
+     *
+     * @param session: The user's session
+     * @param pid: The resource map PID
+     *
+     * @return A stream to the bagged package
+     *
+     * @throws InvalidToken
+     * @throws ServiceFailure
+     * @throws NotAuthorized
+     * @throws NotImplemented
+     */
+    private ResourceMap serializeResourceMap(Session session, Identifier pid)
+            throws InvalidToken, NotFound, InvalidRequest, ServiceFailure, NotAuthorized, InvalidRequest, NotImplemented {
+        SystemMetadata sysMeta = this.getSystemMetadata(session, pid);
+        ResourceMap resMap = null;
+        try {
+            InputStream oreInputStream = this.get(session, pid);
+            resMap = ResourceMapFactory.getInstance().deserializeResourceMap(oreInputStream);
+        } catch (OREException | URISyntaxException e) {
+            logMetacat.error("There was problem with the resource map. Check that that the resource map is valid.", e);
+            throw new ServiceFailure("There was problem with the resource map. Check that that the resource map is valid.", e.getMessage());
+        } catch (UnsupportedEncodingException e) {
+            logMetacat.error("The resource map has an unsupported encoding format.", e);
+            throw new ServiceFailure("The resource map has an unsupported encoding format.", e.getMessage());
+        } catch (OREParserException e) {
+            logMetacat.error("Failed to parse the ORE.", e);
+            throw new ServiceFailure("Failed to parse the ORE.", e.getMessage());
+        }
+        return resMap;
+    }
+
+
+    /**
+     * Maps a resource map to a list to an object that contains all of the identifiers (objects+system metadata)
+     *
+     * @param session: The user's session
+     * @param orePid: The pid of the ORE document
+     *
+     * @throws ServiceFailure
+     */
+    private Map<Identifier, Map<Identifier, List<Identifier>>> parseResourceMap(Session session,
+                                                                                Identifier orePid) throws ServiceFailure {
+
+        // Container that holds the pids of all of the objects that are in a package
+        Map<Identifier, Map<Identifier, List<Identifier>>> resourceMapStructure = null;
+        try {
+            InputStream oreInputStream = this.get(session, orePid);
+            resourceMapStructure = ResourceMapFactory.getInstance().parseResourceMap(oreInputStream); //TODO: Check aggregates vs documents in parseResourceMap
+        } catch (OREException | OREParserException | UnsupportedEncodingException | NotImplemented e) {
+            throw new ServiceFailure("Failed to parse the resource map. Check that the resource map is valid", e.getMessage());
+        } catch (InvalidToken | NotAuthorized e) {
+            logMetacat.error("Invalid token while parsing the resource map. Check that you have permissions.", e);
+        } catch (URISyntaxException e) {
+            throw new ServiceFailure("There was a malformation in the resource map. Check that the resource map is valid", e.getMessage());
+        } catch (NotFound e) {
+            throw new ServiceFailure("Failed to locate the resource map. Check that the right pid was used.", e.getMessage());
+        }
+        if (resourceMapStructure == null) {
+            throw new ServiceFailure("", "There was an error while parsing the resource map.");
+        }
+        return resourceMapStructure;
+    }
+
+    /**
+     * Exports a data package to disk using the BagIt
+     *
+     * The Bagit 0.97 format corresponds to the V1 export format
+     * The Bagit 1.0 format corresponds to the V2 export format
+     *
+     * @param session Information about the user performing the request
+     * @param formatId
+     * @param pid The pid of the resource map
+     * @return A stream of a bag
+     * @throws InvalidToken
+     * @throws ServiceFailure
+     * @throws NotAuthorized
+     * @throws InvalidRequest
+     * @throws NotImplemented
+     * @throws NotFound
+     */
+	@Override
+	public InputStream getPackage(Session session, ObjectFormatIdentifier formatId,
+			Identifier pid) throws InvalidToken, ServiceFailure,
+			NotAuthorized, InvalidRequest, NotImplemented, NotFound {
+	    if(formatId == null) {
+	        throw new InvalidRequest("2873",  "The format id wasn't specified in the request. " +
+                    "Ensure that  the format id is properly set in the request.");
+	    } else if(!formatId.getValue().equals("application/bagit-097") && !formatId.getValue().equals("application/bagit-1.0")) {
+	        throw new NotImplemented("", "The format "+formatId.getValue()+" is not a supported format.");
+	    }
+	    String serviceFailureCode = "2871";
+	    Identifier sid = getPIDForSID(pid, serviceFailureCode);
+	    if(sid != null) {
+	        pid = sid;
+	    }
+
+	    if(formatId.getValue().equals("application/bagit-097")) {
+	        // Use the Version 1 package format
+            logMetacat.debug("Serving a download request for a Version 1 Package");
+            PackageDownloaderV1 downloader = null;
+            try {
+                downloader = new PackageDownloaderV1(pid);
+                SystemMetadata sysMeta = this.getSystemMetadata(session, pid);
+                if (ObjectFormatCache.getInstance().getFormat(sysMeta.getFormatId()).getFormatType().equals("RESOURCE")) {
+                    //Get the resource map as a map of Identifiers
+                    InputStream oreInputStream = this.get(session, pid);
+                    Map<Identifier, Map<Identifier, List<Identifier>>> resourceMapStructure = ResourceMapFactory.getInstance().parseResourceMap(oreInputStream);
+                    downloader.packagePids.addAll(resourceMapStructure.keySet());
+                    //Loop through each object in this resource map
+                    for (Map<Identifier, List<Identifier>> entries : resourceMapStructure.values()) {
+                        //Loop through each metadata object in this entry
+                        Set<Identifier> metadataIdentifiers = entries.keySet();
+                        for (Identifier metadataID : metadataIdentifiers) {
+                            try {
+                                //Get the system metadata for this metadata object
+                                SystemMetadata metadataSysMeta = this.getSystemMetadata(session, metadataID);
+                                // If it's supported metadata, create the PDF file out of it
+                                if (ObjectFormatCache.getInstance().getFormat(metadataSysMeta.getFormatId()).getFormatType().equals("METADATA")) {
+                                    InputStream metadataStream = this.get(session, metadataID);
+                                    downloader.addSciPdf(metadataStream, metadataSysMeta, metadataID);
+                                }
+                            } catch (Exception e) {
+                                logMetacat.error(e.toString());
+                            }
+                        }
+                        downloader.packagePids.addAll(entries.keySet());
+                        for (List<Identifier> dataPids : entries.values()) {
+                            downloader.packagePids.addAll(dataPids);
+                        }
+                    }
+                } else {
+                    // just the lone pid in this package
+                    //throw an invalid request exception
+                    throw new InvalidRequest("2873", "The given pid " + pid.getValue() + " is not a package " +
+                            "id (resource map id). Please use a package id instead.");
+                }
+
+                /**
+                 * Up to this point, the only file that has been added to the bag is the metadata pdf file.
+                 * The next step is looping over each object in the package, determining its filename,
+                 * getting an InputStream to it, and adding it to the bag.
+                 */
+                Set<Identifier> packagePidsUnique = new HashSet<>(downloader.packagePids);
+                for (Identifier entryPid : packagePidsUnique) {
+                    //Get the system metadata for each item
+                    SystemMetadata entrySysMeta = this.getSystemMetadata(session, entryPid);
+
+                    String objectFormatType = ObjectFormatCache.getInstance().getFormat(entrySysMeta.getFormatId()).getFormatType();
+                    String fileName = null;
+
+                    //Our default file name is just the ID + format type (e.g. walker.1.1-DATA)
+                    fileName = entryPid.getValue().replaceAll("[^a-zA-Z0-9\\-\\.]", "_") + "-" + objectFormatType;
+
+                    // ensure there is a file extension for the object
+                    String extension = ObjectFormatInfo.instance().getExtension(entrySysMeta.getFormatId().getValue());
+                    fileName += extension;
+
+                    // if SM has the file name, ignore everything else and use that
+                    if (entrySysMeta.getFileName() != null) {
+                        fileName = entrySysMeta.getFileName().replaceAll("[^a-zA-Z0-9\\-\\.]", "_");
+                    }
+
+                    // Add the stream of the file to the bag object & write to the pid mapping file
+                    InputStream entryInputStream = this.get(session, entryPid);
+                    downloader.speedBag.addFile(entryInputStream, Paths.get("data/", fileName).toString(), false);
+                    downloader.pidMapping.append(entryPid.getValue() + "\t" + "data/" + fileName + "\n");
+                }
+
+                // Get a stream to the pid mapping file and add it as a tag file, in the bag root
+                ByteArrayInputStream pidFile = new ByteArrayInputStream(
+                        downloader.pidMapping.toString().getBytes(StandardCharsets.UTF_8));
+                downloader.speedBag.addFile(pidFile, "pid-mapping.txt", true);
+            } catch (IOException e) {
+                // report as service failure
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            } catch (OREException e) {
+                // report as service failure
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            } catch (URISyntaxException e) {
+                // report as service failure
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            } catch (OREParserException e) {
+                // report as service failure
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", "There was an " +
+                        "error while processing the resource map. Ensure that the resource map " +
+                        "for the package is valid. " + e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", "There was an " +
+                        "error while adding a file to the archive. Please ensure that the " +
+                        "checksumming algorithm is supported." + e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            }
+
+            // The underlying speedbag object is ready to be served to the clinet, do that here
+            try {
+                return downloader.speedBag.stream();
+            } catch (NullPointerException | IOException e) {
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", "There was an " +
+                        "error while streaming the downloaded data package. " + e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", "While creating the package " +
+                        "download, an unsupported checksumming algorithm was encountered. " + e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            }
+        } else if (formatId.getValue().equals("application/bagit-1.0")) {
+
+            logMetacat.debug("Serving a download request for a Version 2 Package");
+            // Get the resource map. This is used various places downstream, which is why it's not a stream. Note that
+            // this throws if it can't be parsed because we depend on it for object pids.
+            Map<Identifier, Map<Identifier, List<Identifier>>> resourceMapStructure = parseResourceMap(session, pid);
+            // Holds the PID of every object in the resource map
+            List<Identifier> pidsOfPackageObjects = new ArrayList<Identifier>();
+            pidsOfPackageObjects.addAll(resourceMapStructure.keySet());
+
+            for (Map<Identifier, List<Identifier>> entries : resourceMapStructure.values()) {
+                pidsOfPackageObjects.addAll(entries.keySet());
+                for (List<Identifier> dataPids : entries.values()) {
+                    pidsOfPackageObjects.addAll(dataPids);
+                }
+            }
+            // Get a ResourceMap object representing the resource map. Throw if we can't get it
+            ResourceMap resourceMap = serializeResourceMap(session, pid);
+            SystemMetadata resourceMapSystemMetadata = this.getSystemMetadata(session, pid);
+            // Create the downloader that's responsible for creating the readme and bag archive.
+            // Throws if something went wrong (we can't continue without a PackageDownloader)
+            PackageDownloaderV2 downloader = new PackageDownloaderV2(pid, resourceMap, resourceMapSystemMetadata);
+
+            List<Identifier> metadataIdentifiers = downloader.getCoreMetadataIdentifiers();
+            // Iterate over all the pids and find get an input stream and potential disk location
+            HashSet<Identifier> uniquePids = new HashSet<>(pidsOfPackageObjects);
+            for (Identifier entryPid : uniquePids) {
+                // Skip the resource map and the science metadata so that we don't write them to the data direcotry
+                if (metadataIdentifiers.contains(entryPid)) {
+                    continue;
+                }
+                // Get the system metadata and a stream to the data file
+                SystemMetadata entrySysMeta = this.getSystemMetadata(session, entryPid);
+                InputStream objectInputStream = this.get(session, entryPid);
+                // Add the stream to the downloader, which will handle finding its location
+                downloader.addDataFile(entrySysMeta, objectInputStream);
+                try {
+                    downloader.addSystemMetadata(entrySysMeta);
+                } catch (NoSuchAlgorithmException e) {
+                    ServiceFailure sf = new ServiceFailure("1030", "While creating the package." +
+                            "Could not add thr system metadata to the zipfile. " + e.getMessage());
+                    sf.initCause(e);
+                    throw sf;
+                }
+            }
+            try {
+                List<Identifier> scienceMetadataIdentifiers = downloader.getScienceMetadataIdentifiers();
+                if (scienceMetadataIdentifiers != null && !scienceMetadataIdentifiers.isEmpty()) {
+                    Identifier sciMetataId = scienceMetadataIdentifiers.get(0);
+                    SystemMetadata systemMetadata = this.getSystemMetadata(session, sciMetataId);
+                    InputStream scienceMetadataStream = this.get(session, sciMetataId);
+                }
+                HashSet<Identifier> uniqueSciPids = new HashSet<>(scienceMetadataIdentifiers);
+                // Add the science metadata and their associated system metadatas to the downloader
+                for (Identifier scienceMetadataIdentifier : uniqueSciPids) {
+                    logMetacat.debug("Adding science metadata to the bag");
+                    SystemMetadata systemMetadata = this.getSystemMetadata(session, scienceMetadataIdentifier);
+                    InputStream scienceMetadataStream = this.get(session, scienceMetadataIdentifier);
+                    downloader.addScienceMetadata(systemMetadata, scienceMetadataStream);
+                }
+
+                return downloader.download();
+            } catch (NullPointerException e) {
+                e.printStackTrace();
+                ServiceFailure sf = new ServiceFailure("1030", "There was an " +
+                        "error while streaming the downloaded data package. " + e.getMessage());
+                sf.initCause(e);
+                throw sf;
+            }
+        } else {
+            ServiceFailure sf = new ServiceFailure("", "The download forma,t "+formatId.getValue()+" is not a " +
+                    "supported format.");
+            throw sf;
+        }
+	}
+
+	 /**
+	   * Archives an object, where the object is either a 
+	   * data object or a science metadata object.
+	   * 
+	   * @param session - the Session object containing the credentials for the Subject
+	   * @param pid - The object identifier to be archived
+	   * 
+	   * @return pid - the identifier of the object used for the archiving
+	   * 
+	   * @throws InvalidToken
+	   * @throws ServiceFailure
+	   * @throws NotAuthorized
+	   * @throws NotFound
+	   * @throws NotImplemented
+	   * @throws InvalidRequest
+	   */
+	  public Identifier archive(Session session, Identifier pid) 
+	      throws InvalidToken, ServiceFailure, NotAuthorized, NotFound, NotImplemented 
+	  {
+	      if(isReadOnlyMode()) {
+	          throw new ServiceFailure("2912", ReadOnlyChecker.DATAONEERROR);
+	      }
+	      boolean allowed = false;
+	      // do we have a valid pid?
+	      if (pid == null || pid.getValue().trim().equals("")) {
+	          throw new ServiceFailure("1350", "The provided identifier was invalid.");
+	      }
+
+	      String serviceFailureCode = "1350";
+	      Identifier sid = getPIDForSID(pid, serviceFailureCode);
+	      if(sid != null) {
+	          pid = sid;
+	      }
+	      // does the subject have archive (a D1 CHANGE_PERMISSION level) privileges on the pid?
+	      try {
+	          allowed = isAuthorized(session, pid, Permission.CHANGE_PERMISSION);
+	      } catch (InvalidRequest e) {
+	          throw new ServiceFailure("1350", e.getDescription());
+	      } 
+
+	      if (allowed) {
+	          try {
+	              HazelcastService.getInstance().getSystemMetadataMap().lock(pid);
+	              logMetacat.debug("MNodeService.archive - lock the identifier "+pid.getValue()+" in the system metadata map.");
+	              SystemMetadata sysmeta = HazelcastService.getInstance().getSystemMetadataMap().get(pid);
+	              //check the if it has enough quota if th quota service is enabled
+	              String quotaSubject = request.getHeader(QuotaServiceManager.QUOTASUBJECTHEADER);
+	              QuotaServiceManager.getInstance().enforce(quotaSubject, session.getSubject(), sysmeta, QuotaServiceManager.ARCHIVEMETHOD);
+	              boolean needModifyDate = true;
+	              boolean logArchive = true;
+	              super.archiveObject(logArchive, session, pid, sysmeta, needModifyDate); 
+	          } catch (InsufficientResources e) {
+	              throw new ServiceFailure("2912", "The user doesn't have enough quota to perform this request " + e.getMessage());
+	          } catch (InvalidRequest ee) {
+                  throw new InvalidToken("2913", "The request is invalid - " + ee.getMessage());
+	          } finally {
+	              HazelcastService.getInstance().getSystemMetadataMap().unlock(pid);
+	              logMetacat.debug("MNodeService.archive - unlock the identifier "+pid.getValue()+" in the system metadata map.");
+	          }
+
+
+	      } else {
+	          throw new NotAuthorized("1320", "The provided identity does not have " + "permission to archive the object on the Node.");
+	      }
+
+	      return pid;
+	  }
     
+	  /**
+	   * Update the system metadata of the specified pid.
+	   */
+	  @Override
+	  public boolean updateSystemMetadata(Session session, Identifier pid,
+	          SystemMetadata sysmeta) throws NotImplemented, NotAuthorized,
+	  ServiceFailure, InvalidRequest, InvalidSystemMetadata, InvalidToken {
+
+	      if(isReadOnlyMode()) {
+	          throw new ServiceFailure("4868",  ReadOnlyChecker.DATAONEERROR);
+	      }
+	      if(sysmeta == null) {
+	          throw  new InvalidRequest("4869", "The system metadata object should NOT be null in the updateSystemMetadata request.");
+	      }
+	      if(pid == null || pid.getValue() == null) {
+	          throw new InvalidRequest("4869", "Please specify the id in the updateSystemMetadata request ") ;
+	      }
+
+	      if (session == null) {
+	          //TODO: many of the thrown exceptions do not use the correct error codes
+	          //check these against the docs and correct them
+	          throw new NotAuthorized("4861", "No Session - could not authorize for updating system metadata." +
+	                  "  If you are not logged in, please do so and retry the request.");
+	      } 
+	      //update the system metadata locally
+	      boolean success = false;
+	      try {
+	          HazelcastService.getInstance().getSystemMetadataMap().lock(pid);
+	          SystemMetadata currentSysmeta = HazelcastService.getInstance().getSystemMetadataMap().get(pid);
+	          if(currentSysmeta == null) {
+	              throw  new InvalidRequest("4869", "We can't find the current system metadata on the member node for the id "+pid.getValue());
+	          }
+	          D1AuthHelper authDel = null;
+	          try {
+                  authDel = new D1AuthHelper(request, pid, "4861","4868");
+                  authDel.doUpdateAuth(session, currentSysmeta, Permission.CHANGE_PERMISSION, this.getCurrentNodeId());
+              } catch(ServiceFailure e) {
+                  throw new ServiceFailure("4868", "Can't determine if the client has the permission to update the system metacat of the object with id "+pid.getValue()+" since "+e.getDescription());
+              } catch(NotAuthorized e) {
+                  //the user doesn't have the change permission. However, if it has the write permission and doesn't modify the access rules, Metacat still allows it to update the system metadata
+                  try {
+                      authDel.doUpdateAuth(session, currentSysmeta, Permission.WRITE, this.getCurrentNodeId());
+                      //now the user has the write the permission. If the access rules in the new and old system metadata are the same, it is fine; otherwise, Metacat throws an exception
+                      if (D1NodeService.isAccessControlDirty(sysmeta, currentSysmeta)) {
+                          throw new NotAuthorized("4861", "Can't update the system metadata of the object with id " + pid.getValue() + " since the user try to change the access rules without the change permission: " + e.getDescription());
+                      }
+                  } catch(ServiceFailure ee) {
+                      throw new ServiceFailure("4868", "Can't determine if the client has the permission to update the system metadata the object with id " + pid.getValue() + " since " + ee.getDescription());
+                  } catch(NotAuthorized ee) {
+                      throw new NotAuthorized("4861", "Can't update the system metadata of object with id " + pid.getValue() + " since " + ee.getDescription());
+                  }
+              }      
+	          Date currentModiDate = currentSysmeta.getDateSysMetadataModified();
+	          Date commingModiDate = sysmeta.getDateSysMetadataModified();
+	          if(commingModiDate == null) {
+	              throw  new InvalidRequest("4869", "The system metadata modification date can't be null.");
+	          }
+	          if(currentModiDate != null && commingModiDate.getTime() != currentModiDate.getTime()) {
+	              throw new InvalidRequest("4869", "Your system metadata modification date is "+commingModiDate.toString()+
+	                      ". It doesn't match our current system metadata modification date in the member node - "+currentModiDate.toString()+
+	                      ". Please check if you have got the newest version of the system metadata before the modification.");
+	          }
+	          //check the if client change the authoritative member node.
+	          if (currentSysmeta.getAuthoritativeMemberNode() != null && sysmeta.getAuthoritativeMemberNode() != null && 
+	                  !currentSysmeta.getAuthoritativeMemberNode().equals(sysmeta.getAuthoritativeMemberNode())) {
+	              throw new InvalidRequest("4869", "Current authoriativeMemberNode is "+currentSysmeta.getAuthoritativeMemberNode().getValue()+" but the value on the new system metadata is "+sysmeta.getAuthoritativeMemberNode().getValue()+
+	                      ". They don't match. Clients don't have the permission to change it.");
+	          } else if (currentSysmeta.getAuthoritativeMemberNode() != null && sysmeta.getAuthoritativeMemberNode() == null) {
+	              throw new InvalidRequest("4869", "Current authoriativeMemberNode is "+currentSysmeta.getAuthoritativeMemberNode().getValue()+" but the value on the new system metadata is null. They don't match. Clients don't have the permission to change it.");
+	          }
+	          else if(currentSysmeta.getAuthoritativeMemberNode() == null && sysmeta.getAuthoritativeMemberNode() != null ) {
+	              throw new InvalidRequest("4869", "Current authoriativeMemberNode is null but the value on the new system metadata is not null. They don't match. Clients don't have the permission to change it.");
+	          }
+	          checkAddRestrictiveAccessOnDOI(currentSysmeta, sysmeta);
+	          boolean needUpdateModificationDate = true;
+	          boolean fromCN = false;
+	          success = updateSystemMetadata(session, pid, sysmeta, needUpdateModificationDate, currentSysmeta, fromCN);
+	      } finally {
+	          HazelcastService.getInstance().getSystemMetadataMap().unlock(pid);
+	      }
+	      
+	      if (success) {
+	          // attempt to re-register the identifier (it checks if it is a doi)
+              try {
+                  logMetacat.info("MNodeSerice.updateSystemMetadata - register doi if the pid "+sysmeta.getIdentifier().getValue()+" is a doi");
+                  DOIServiceFactory.getDOIService().registerDOI(sysmeta);
+              } catch (Exception e) {
+                  logMetacat.error("MNodeService.updateSystemMetadata - Could not [re]register DOI: " + e.getMessage(), e);
+              }
+	      }
+
+	      if(success && needSync) {
+	          logMetacat.debug("MNodeService.updateSystemMetadata - the cn needs to be notified that the system metadata of object " +pid.getValue()+" has been changed ");
+	          this.cn = D1Client.getCN();
+	          //TODO
+	          //notify the cns the synchornize the new system metadata.
+	          // run it in a thread to avoid connection timeout
+	          Runnable runner = new Runnable() {
+	              private CNode cNode = null;
+	              private SystemMetadata sys = null;
+	              private Identifier id = null;
+	              @Override
+	              public void run() {
+	                  try {
+	                      if(this.cNode == null)  {
+	                          logMetacat.warn("MNodeService.updateSystemMetadata - can't get the instance of the CN. So can't call cn.synchronize to update the system metadata in CN.");
+	                      } else if(id != null) {
+	                          logMetacat.info("MNodeService.updateSystemMetadata - calling cn.synchornized in another thread for pid "+id.getValue());
+	                          this.cNode.synchronize(null, id);
+	                      } else {
+	                          logMetacat.warn("MNodeService.updateSystemMetadata - the pid is null. So can't call cn.synchronize to update the system metadata in CN.");
+	                      }
+	                  } catch (BaseException e) {
+	                      e.printStackTrace();
+	                      logMetacat.error("It is a DataONEBaseException and its detail code is "+e.getDetail_code() +" and its code is "+e.getCode());
+	                      logMetacat.error("Can't update the systemmetadata of pid "+id.getValue()+" in CNs through cn.synchronize method since "+e.getMessage(), e);
+	                  } catch (Exception e) {
+	                      e.printStackTrace();
+	                      logMetacat.error("Can't update the systemmetadata of pid "+id.getValue()+" in CNs through cn.synchronize method since "+e.getMessage(), e);
+	                  }
+	              }
+	              private Runnable init(CNode cn, SystemMetadata sys, Identifier id){
+	                  this.cNode = cn;
+	                  this.sys = sys;
+	                  this.id = id;
+	                  return this;
+
+	              }
+	          }.init(cn, sysmeta, pid);
+	          // submit the task, and that's it
+	          if(executor != null) {
+	              executor.submit(runner);
+	          } else {
+	              logMetacat.warn("MNodeSerivce.updateSystemMetadata - since the executor service for submitting the call of cn.synchronize() is null, the system metadata change of the id "+pid.getValue()+" can't go to cn through cn.synchronize.");
+	          }
+	      }
+	      return success;
+	  }
+
+	  /**
+	   * Get the status of the system. this is an unofficial dataone api method. Currently we only reply the size of the index queue.
+	   * The method will return the input stream of a xml instance. In the future, we need to
+	   * add a new dataone type to represent the result.
+	   * @param session
+	   * @return the input stream which is the xml presentation of the status report
+	   */
+	  public InputStream getStatus(Session session) throws NotAuthorized, ServiceFailure {
+	      int size = HazelcastService.getInstance().getIndexQueue().size();
+	      StringBuffer result = new StringBuffer();
+	      result.append("<?xml version=\"1.0\"?>");
+	      result.append("<status>");
+	      result.append("<index>");
+	      result.append("<sizeOfQueue>");
+	      result.append(size);
+	      result.append("</sizeOfQueue>");
+	      result.append("</index>");
+	      result.append("</status>");
+	      return IOUtils.toInputStream(result.toString());
+	  }
+	  
+	  /**
+	   * Make status of the given identifier (e.g. a DOI) public
+	   * @param session  the subject who calls the method
+	   * @param identifer  the identifier whose status will be public. It can be a pid or sid.
+	   * @throws InvalidToken
+	   * @throws ServiceFailure
+	   * @throws NotAuthorized
+	   * @throws NotImplemented
+	   * @throws InvalidRequest
+	   * @throws NotFound
+	   * @throws IdentifierNotUnique
+	   * @throws UnsupportedType
+	   * @throws InsufficientResources
+	   * @throws InvalidSystemMetadata
+	   * @throws DOIException
+	   */
+	  public void publishIdentifier(Session session, Identifier identifier) throws InvalidToken, 
+	      ServiceFailure, NotAuthorized, NotImplemented, InvalidRequest, NotFound, IdentifierNotUnique, 
+	      UnsupportedType, InsufficientResources, InvalidSystemMetadata, DOIException {
+	    
+	    String invalidRequestCode = "1202";
+	    String notFoundCode ="1280";
+	    if (identifier == null || identifier.getValue().trim().equals("")) {
+	        throw new InvalidRequest(invalidRequestCode, "MNodeService.publishIdentifier - the identifier which needs to be published can't be null.");
+	    }
+        String serviceFailureCode = "1310";
+        Identifier pid = getPIDForSID(identifier, serviceFailureCode);//identifier can be a sid, now we got the pid
+        if(pid == null) {
+            pid = identifier;
+        }
+        logMetacat.info("MNodeService.publishIdentifier - the PID for the id " + identifier.getValue() + " is " + pid.getValue());
+        SystemMetadata existingSysMeta = getSystemMetadataForPID(pid, serviceFailureCode, invalidRequestCode, notFoundCode, true);
+        D1AuthHelper authDel = new D1AuthHelper(request, pid, "1200", "1310");
+        //if the user has the write permission, it will be all set
+        authDel.doUpdateAuth(session, existingSysMeta, Permission.WRITE, this.getCurrentNodeId());
+        existingSysMeta = makePublicIfNot(existingSysMeta, pid, true);//make the metadata file public
+        Identifier oreIdentifier = getNewestORE(session, pid);
+        if (oreIdentifier != null) {
+            //make the result map public
+            SystemMetadata oreSysmeta = getSystemMetadataForPID(oreIdentifier, serviceFailureCode, invalidRequestCode, notFoundCode, true);
+            oreSysmeta = makePublicIfNot(oreSysmeta, oreIdentifier, true);
+            if (enforcePublicEntirePackageInPublish) {
+                //make data objects public readable if needed
+                InputStream oreInputStream = this.get(session, oreIdentifier);
+                if (oreInputStream != null) {
+                    Model model = ModelFactory.createDefaultModel();
+                    model.read(oreInputStream, null);
+                    List<Identifier> dataIdentifiers = ResourceMapModifier.getSubjectsOfDocumentedBy(pid, model);
+                    for (Identifier dataId: dataIdentifiers) {
+                            SystemMetadata dataSysMeta = this.getSystemMetadata(session, dataId);
+                            dataSysMeta = makePublicIfNot(dataSysMeta, dataId, true);
+                    }
+                }
+            }
+        }
+	    try {
+	          DOIServiceFactory.getDOIService().publishIdentifier(session, identifier);
+	    } catch (PropertyNotFoundException e) {
+	          throw new ServiceFailure("3196", "Can't publish the identifier since " + e.getMessage());
+	    } catch (DOIException e) {
+	          throw new ServiceFailure("3196", "Can't publish the identifier since " + e.getMessage());
+	    } catch (InstantiationException e) {
+	          throw new ServiceFailure("3196", "Can't publish the identifier since " + e.getMessage());
+	    } catch (IllegalAccessException e) {
+	          throw new ServiceFailure("3196", "Can't publish the identifier since " + e.getMessage());
+	    } catch (ClassNotFoundException e) {
+	          throw new ServiceFailure("3196", "Can't publish the identifier since " + e.getMessage());
+	    }
+	  }
+	
+	/**
+	 * Check if the new system meta data removed the public-readable access rule for an DOI object ( DOI can be in the identifier or sid fields)
+	 * @param newSysMeta
+	 * @throws InvalidRequest
+	 */
+	private void checkAddRestrictiveAccessOnDOI(SystemMetadata oldSysMeta, SystemMetadata newSysMeta)  throws InvalidRequest {
+	    String doi ="doi:";
+	    boolean identifierIsDOI = false;
+        boolean sidIsDOI = false;
+        if(newSysMeta.getIdentifier() == null) {
+            throw new InvalidRequest("4869", "In the MN.updateSystemMetadata method, the identifier shouldn't be null in the new version system metadata ");
+        }
+        String identifier = newSysMeta.getIdentifier().getValue();
+        String sid = null;
+        if(newSysMeta.getSeriesId() != null) {
+            sid = newSysMeta.getSeriesId().getValue();
+        }
+        // determine if this identifier is an DOI
+        if (identifier != null && identifier.startsWith(doi)) {
+            identifierIsDOI = true;
+        }
+        // determine if this sid is an DOI
+        if (sid != null && sid.startsWith(doi)) {
+            sidIsDOI = true;
+        }
+        if(identifierIsDOI || sidIsDOI) {
+            Subject publicUser = new Subject();
+            publicUser.setValue("public");
+            //We only apply this rule when the old system metadata allow the public user read this object.
+            boolean isOldSysmetaPublicReadable = false;
+            AccessPolicy oldAccess = oldSysMeta.getAccessPolicy();
+            if(oldAccess != null) {
+                if (oldAccess.getAllowList() != null) {
+                    for (AccessRule item : oldAccess.getAllowList()) {
+                        if(item.getSubjectList() != null && item.getSubjectList().contains(publicUser)) {
+                            if (item.getPermissionList() != null && item.getPermissionList().contains(Permission.READ)) {
+                                isOldSysmetaPublicReadable = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if(isOldSysmetaPublicReadable) {
+                AccessPolicy access = newSysMeta.getAccessPolicy();
+                if(access == null) {
+                    throw new InvalidRequest("4869", "In the MN.updateSystemMetadata method, the public-readable access rule shouldn't be removed for an DOI object "+identifier+ " or SID "+sid);
+                } else {
+                    boolean found = false;
+                    if (access.getAllowList() != null) {
+                        for (AccessRule item : access.getAllowList()) {
+                            if(item.getSubjectList() != null && item.getSubjectList().contains(publicUser)) {
+                                if (item.getPermissionList() != null && item.getPermissionList().contains(Permission.READ)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if(!found) {
+                        throw new InvalidRequest("4869", "In the MN.updateSystemMetadata method, the public-readable access rule shouldn't be removed for an DOI object "+identifier+ " or SID "+sid);
+                    }
+                }
+            }
+        }
+	}
+	
+	protected NodeReference getCurrentNodeId() {
+	    return TypeFactory.buildNodeReference(Settings.getConfiguration().getString("dataone.nodeId"));
+	}
+	
+	/**
+     * Determine if the current node is the authoritative node for the given pid.
+     * (uses HZsysmeta map)
+     */
+    protected boolean isAuthoritativeNode(Identifier pid) throws InvalidRequest {
+        boolean isAuthoritativeNode = false;
+        if(pid != null && pid.getValue() != null) {
+            SystemMetadata sys = HazelcastService.getInstance().getSystemMetadataMap().get(pid);
+            if(sys != null) {
+                NodeReference node = sys.getAuthoritativeMemberNode();
+                if(node != null) {
+                    String nodeValue = node.getValue();
+                    logMetacat.debug("The authoritative node for id "+pid.getValue()+" is "+nodeValue);
+                    String currentNodeId = Settings.getConfiguration().getString("dataone.nodeId");
+                    logMetacat.debug("The node id in metacat.properties is "+currentNodeId);
+                    if(currentNodeId != null && !currentNodeId.trim().equals("") && currentNodeId.equals(nodeValue)) {
+                        logMetacat.debug("They are matching, so the authoritative mn of the object "+pid.getValue()+" is the current node");
+                        isAuthoritativeNode = true;
+                    }
+                } else {
+                    throw new InvalidRequest("4869", "Coudn't find the authoritative member node in the system metadata associated with the pid "+pid.getValue());
+                }
+            } else {
+                throw new InvalidRequest("4869", "Coudn't find the system metadata associated with the pid "+pid.getValue());
+            }
+        } else {
+            throw new InvalidRequest("4869", "The request pid is null");
+        }
+        return isAuthoritativeNode;
+    }
+    
+    
+    /**
+     * Check if the metacat is in the read-only mode.
+     * @return true if it is; otherwise false.
+     */
+    protected boolean isReadOnlyMode() {
+        boolean readOnly = false;
+        ReadOnlyChecker checker = new ReadOnlyChecker();
+        readOnly = checker.isReadOnly();
+        return readOnly;
+    }
+    
+    /**
+     * Set the value if Metacat need to make the entire package public during the publish process
+     * @param enforce  enforce the entire package public readable or not
+     */
+    public static void setEnforcePublisEntirePackage(boolean enforce) {
+        enforcePublicEntirePackageInPublish = enforce;
+    }
+  
 }

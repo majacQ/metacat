@@ -28,23 +28,34 @@ package edu.ucsb.nceas.metacat.util;
 
 import java.util.Calendar;
 import java.util.Vector;
+import java.util.regex.Pattern;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.dataone.service.exceptions.ServiceFailure;
+import org.dataone.service.types.v1.Group;
+import org.dataone.service.types.v1.Person;
+import org.dataone.service.types.v1.Session;
+import org.dataone.service.types.v1.Subject;
+import org.dataone.service.types.v1.SubjectInfo;
 
 import edu.ucsb.nceas.metacat.AuthSession;
+import edu.ucsb.nceas.metacat.dataone.D1AuthHelper;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.service.SessionService;
 import edu.ucsb.nceas.metacat.shared.MetacatUtilException;
 import edu.ucsb.nceas.metacat.shared.ServiceException;
 import edu.ucsb.nceas.utilities.PropertyNotFoundException;
-import edu.ucsb.nceas.utilities.StringUtil;
 
 public class AuthUtil {
 	
-    public static Logger logMetacat = Logger.getLogger(AuthUtil.class);
+    public static Log logMetacat = LogFactory.getLog(AuthUtil.class);
+    public static String DELIMITER=":";
+    public static String ESCAPECHAR="\\";
+
 
 	private static Vector<String> administrators = null;
 	private static Vector<String> moderators = null;
@@ -119,7 +130,7 @@ public class AuthUtil {
 							+ "There will be no registered metacat adminstrators: "
 							+ pnfe.getMessage());
 		}
-		administrators = StringUtil.toVector(administratorString, ':');
+		administrators = split(administratorString, DELIMITER, ESCAPECHAR);
 		
 		String d1NodeAdmin = null;
 		try {
@@ -137,7 +148,7 @@ public class AuthUtil {
 	 * Get the vector of allowed submitter credentials from metacat.properties
 	 * and put into global allowedSubmitters list
 	 */
-	private static void populateAllowedSubmitters() throws MetacatUtilException {
+	public static void populateAllowedSubmitters() throws MetacatUtilException {
 		String allowedSubmitterString = null;
 		try {
 			allowedSubmitterString = PropertyService.getProperty("auth.allowedSubmitters");
@@ -146,7 +157,7 @@ public class AuthUtil {
 					+ "Anyone will be allowed to submit: "
 					+ pnfe.getMessage());
 		}		
-		allowedSubmitters = StringUtil.toVector(allowedSubmitterString, ':');		
+		allowedSubmitters = split(allowedSubmitterString, DELIMITER, ESCAPECHAR);		
 	}
 	
 	/**
@@ -161,7 +172,7 @@ public class AuthUtil {
 			throw new MetacatUtilException("Could not get metacat property: auth.deniedSubmitters: "
 					+ pnfe.getMessage());
 		}		
-		deniedSubmitters = StringUtil.toVector(deniedSubmitterString, ':');		
+		deniedSubmitters = split(deniedSubmitterString, DELIMITER, ESCAPECHAR);		
 	}
 	
 	/**
@@ -178,7 +189,7 @@ public class AuthUtil {
 							+ "There will be no registered metacat moderators: "
 							+ pnfe.getMessage());
 		}
-		moderators = StringUtil.toVector(moderatorString, ':');
+		moderators = split(moderatorString, DELIMITER, ESCAPECHAR);
 	}
 
 	/**
@@ -408,7 +419,18 @@ public class AuthUtil {
 			// hence everyone should be allowed
 			return true;
 		}
-		return (onAccessList(getAllowedSubmitters(), username, groups));
+		boolean allow = onAccessList(getAllowedSubmitters(), username, groups);
+		if (!allow) {
+		    //check if it is the mn subject
+		    D1AuthHelper helper = new D1AuthHelper(null, null, null, null);
+		    Session session = buildSession(username, groups);
+		    try {
+		        allow = helper.isLocalMNAdmin(session);
+		    } catch (ServiceFailure e) {
+		        throw new MetacatUtilException(e.getMessage());
+		    }
+		}
+		return allow;
 	}
 
 	/**
@@ -434,6 +456,22 @@ public class AuthUtil {
 	 */
 	public static boolean canInsertOrUpdate(String username, String[] groups)
 			throws MetacatUtilException {
+	    if(logMetacat.isDebugEnabled()) {
+        	    logMetacat.debug("AuthUtil.canInsertOrUpdate - The user is "+ username);
+        	    if(groups == null) {
+        	        logMetacat.debug("AuthUtil.canInsertOrUpdate -The group is null");
+        	    } else {
+        	        if(groups.length == 0) {
+        	            logMetacat.debug("AuthUtil.canInsertOrUpdate -The group is empty");
+        	        } else {
+        	            logMetacat.debug("AuthUtil.canInsertOrUpdate -And this user is in the group(s)");
+        	            for (int i=0;i<groups.length; i++) {
+        	                logMetacat.debug("AuthUtil.canInsertOrUpdate -Group "+groups[i]);
+        	            }
+        	        }
+        	    }
+	    }
+	    
 		return (isAllowedSubmitter(username, groups) && !isDeniedSubmitter(username,
 				groups));
 	}
@@ -457,23 +495,82 @@ public class AuthUtil {
 		}
 
 		// Check that the user is authenticated as an administrator account
-		for (String accessString : accessList) {
+		for (String accessString : accessList)  {
+		     // is a user dn
+            if (username != null && username.equals(accessString)) {
+                logMetacat.debug("AuthUtil.onAccessList - user "+username +" is in the access list.");
+                return true;
+            }
 			// check the given admin dn is a group dn...
-			if (groups != null && accessString.startsWith("cn=")) {
+			if (groups != null) {
 				// is a group dn
 				for (int j = 0; j < groups.length; j++) {
 					if (groups[j] != null && groups[j].equals(accessString)) {
+					    logMetacat.debug("AuthUtil.onAccessList - user "+username +" has a grouup which is in the access list.");
 						return true;
 					}
 				}
-			} else {
-				// is a user dn
-				if (username != null && username.equals(accessString)) {
-					return true;
-				}
-			}
+			} 
 		}
 		return false;
 	}
+	
+	/**
+     * Convert a delimited string to a Vector by splitting on a particular character
+     * @param text  the text to be split into components
+     * @param delimiter  the string to specify the delimiter
+     * @param escapeChar  the string to escape a delimiter.
+     * @return a vector holding the values. An empty vector will be returned if the text is null or empty.
+     */
+    public static Vector<String> split(String text, String delimiter, String escapeChar) {
+        Vector<String> results = new Vector<String>();
+        //logMetacat.debug("AuthUtil.split -the text is "+text);
+        //logMetacat.debug("AuthUtil.split - the delimiter is "+delimiter);
+        //logMetacat.debug("AuthUtil.split -the escapeChar is "+ escapeChar);
+        if(text != null && text.length()>0 && delimiter != null && escapeChar != null) {
+            String regex = "(?<!" + Pattern.quote(escapeChar) + ")" + Pattern.quote(delimiter);
+            logMetacat.debug("AuthUtil.split - The regex is "+regex);
+            String[] strArray = text.split(regex);
+            if(strArray != null) {
+                for(int i=0; i<strArray.length; i++) {
+                    logMetacat.debug("AuthUtil.split - the splitted original value "+strArray[i]);
+                    String remove = strArray[i].replaceAll(Pattern.quote(escapeChar+delimiter), delimiter);
+                    logMetacat.debug("AuthUtil.split - the value after removed escpate char is "+remove);
+                    results.add(remove);
+                }
+            }
+        }
+        return results;
+    }
+    
+    /**
+     * Construct a session object base the given user and group name
+     * @param user  the user name for the session
+     * @param groups  the groups name for the session
+     * @return  a session object
+     */
+    private static Session buildSession(String user, String[] groups) {
+        Session session = new Session();
+        Subject userSubject = new Subject();
+        userSubject.setValue(user);
+        session.setSubject(userSubject);
+        SubjectInfo subjectInfo = new SubjectInfo();
+        Person person = new Person();
+        person.setSubject(userSubject);
+        if (groups != null && groups.length > 0) {
+            for (String groupName: groups) {
+                Group group = new Group();
+                group.setGroupName(groupName);
+                Subject groupSubject = new Subject();
+                groupSubject.setValue(groupName);
+                group.setSubject(groupSubject);
+                subjectInfo.addGroup(group);
+                person.addIsMemberOf(groupSubject);
+            }
+        }
+        subjectInfo.addPerson(person);
+        session.setSubjectInfo(subjectInfo);
+        return session;
+    }
 
 }

@@ -31,7 +31,8 @@ import java.util.Properties;
 import java.util.StringTokenizer;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.metacat.client.DocumentNotFoundException;
 import edu.ucsb.nceas.metacat.client.InsufficientKarmaException;
@@ -65,7 +66,7 @@ public class MetacatCatalog extends AbstractCatalog {
   
   /* Class fields */
   
-  private static final Logger logger = Logger.getLogger(MetacatCatalog.class);
+  private static final Log logger = LogFactory.getLog(MetacatCatalog.class);
   private static String refreshDate = null;
 
   /** Database connection */
@@ -92,7 +93,7 @@ public class MetacatCatalog extends AbstractCatalog {
   private final String QUERY =
   "SELECT xd.docid, xd.doctype, xd.date_updated " +
   "FROM xml_documents xd, identifier id " +
-  "WHERE xd.doctype like 'eml://ecoinformatics.org/eml-2%' " +
+  "WHERE xd.doctype like '%ecoinformatics.org/eml-2%' " +
   " AND xd.docid = id.docid " +
   " AND xd.rev = id.rev " +
   // ALLOW rule
@@ -137,7 +138,8 @@ public class MetacatCatalog extends AbstractCatalog {
         metacatURL = SystemUtil.getServletURL();
       }
       else {
-        metacatURL = properties.getProperty("test.metacatUrl");
+        //metacatURL = properties.getProperty("test.metacatUrl");
+        metacatURL = SystemUtil.getServletURL();
       }
       
       logger.warn("metacatURL: " + metacatURL);
@@ -515,7 +517,7 @@ public class MetacatCatalog extends AbstractCatalog {
      */
     if (doctype != null && 
         (metadataPrefix.equals("oai_dc") ||
-         (doctype.startsWith("eml://ecoinformatics.org/eml-") && 
+         (doctype.contains("ecoinformatics.org/eml-") && 
           doctype.endsWith(metadataPrefix)
          )
         )

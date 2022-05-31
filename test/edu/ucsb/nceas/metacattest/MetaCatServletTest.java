@@ -26,36 +26,31 @@
 
 package edu.ucsb.nceas.metacattest;
 
-import edu.ucsb.nceas.MCTestCase;
-import edu.ucsb.nceas.metacat.IdentifierManager;
-import edu.ucsb.nceas.metacat.properties.PropertyService;
-import edu.ucsb.nceas.utilities.HttpMessage;
-import edu.ucsb.nceas.utilities.PropertyNotFoundException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.StringWriter;
+import java.util.List;
+import java.util.Properties;
 
 import junit.framework.Test;
 import junit.framework.TestSuite;
-
-import java.io.*;
-import java.net.*;
-import java.util.*;
+import edu.ucsb.nceas.MCTestCase;
+import edu.ucsb.nceas.metacat.IdentifierManager;
+import edu.ucsb.nceas.metacat.client.MetacatClient;
+import edu.ucsb.nceas.metacat.client.MetacatFactory;
+import edu.ucsb.nceas.metacat.client.MetacatInaccessibleException;
+import edu.ucsb.nceas.metacat.properties.PropertyService;
+import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 
 
 /**
  * A JUnit test for testing Step class processing
  */
 public class MetaCatServletTest extends MCTestCase {
-	private static String metacatURL;
+	private MetacatClient metacat = null;
 	private String serialNumber;
 
-	/* Initialize properties */
-	static {
-		try {
-			metacatURL = PropertyService.getProperty("test.metacatUrl");
-		} catch (PropertyNotFoundException pnfe) {
-			System.err.println("Could not get property in static block: "
-					+ pnfe.getMessage());
-		}
-	}
+
 
 	/**
 	 * Constructor to build the test
@@ -82,6 +77,12 @@ public class MetaCatServletTest extends MCTestCase {
 	 * Establish a testing framework by initializing appropriate objects
 	 */
 	public void setUp() {
+		try {
+			metacat = (MetacatClient) MetacatFactory.createMetacatConnection(metacatUrl);
+		} catch (MetacatInaccessibleException e) {
+			fail("Could not initialize MetacatClient: " + e.getMessage());
+			e.printStackTrace();
+		}
 
 	}
 
@@ -100,8 +101,8 @@ public class MetaCatServletTest extends MCTestCase {
 
 		TestSuite suite = new TestSuite();
 		suite.addTest(new MetaCatServletTest("initialize"));
-		suite.addTest(new MetaCatServletTest("testLterReferralLogin"));
-		suite.addTest(new MetaCatServletTest("testLterReferralLoginFail"));
+		//suite.addTest(new MetaCatServletTest("testLterReferralLogin"));
+		//suite.addTest(new MetaCatServletTest("testLterReferralLoginFail"));
 		suite.addTest(new MetaCatServletTest("testOtherReferralLogin"));
 		suite.addTest(new MetaCatServletTest("testOtherReferralLoginFail"));
 		suite.addTest(new MetaCatServletTest("testNCEASLoginFail"));
@@ -136,7 +137,8 @@ public class MetaCatServletTest extends MCTestCase {
 		suite.addTest(new MetaCatServletTest("testLogOut"));
 		
 		suite.addTest(new MetaCatServletTest("testReindexFail"));
-
+		
+		
 		return suite;
 	}
 
@@ -157,6 +159,8 @@ public class MetaCatServletTest extends MCTestCase {
             String user = PropertyService.getProperty("test.mcUser");
             String passwd = PropertyService.getProperty("test.mcPassword");
             assertTrue(logIn(user, passwd));
+            this.testLogOut();
+
         } catch (PropertyNotFoundException pnfe) {
             fail("Could not find property: " + pnfe.getMessage());
         }
@@ -171,6 +175,8 @@ public class MetaCatServletTest extends MCTestCase {
             String user = PropertyService.getProperty("test.mcUser");
             String passwd = "BogusPasswordShouldFail";
             assertTrue(!logIn(user, passwd));
+            this.testLogOut();
+
         } catch (PropertyNotFoundException pnfe) {
             fail("Could not find property: " + pnfe.getMessage());
         }
@@ -179,7 +185,7 @@ public class MetaCatServletTest extends MCTestCase {
 	/**
 	 * Test the login to lter succesfully
 	 */
-	public void testLterReferralLogin() {
+	/*public void testLterReferralLogin() {
 		debug("\nRunning: testLterReferralLogin test");
 		String user = null;
 		String passwd = null;
@@ -192,13 +198,15 @@ public class MetaCatServletTest extends MCTestCase {
 
 		debug("Logging into lter: " + user + " : " + passwd);
 		assertTrue(logIn(user, passwd));
+        this.testLogOut();
 
-	}
+
+	}*/
 
 	/**
 	 * Test the login to lter failed
 	 */
-	public void testLterReferralLoginFail() {
+	/*public void testLterReferralLoginFail() {
 		debug("\nRunning: testLterReferralLoginFail test");
 		String user = null;
     String passwd = "wrong";
@@ -209,7 +217,9 @@ public class MetaCatServletTest extends MCTestCase {
     }
 		assertTrue(!logIn(user, passwd));
 		// assertTrue( withProtocol.getProtocol().equals("http"));
-	}
+        this.testLogOut();
+
+	}*/
 
 	/**
 	 * Test the login to Other succesfully
@@ -227,6 +237,8 @@ public class MetaCatServletTest extends MCTestCase {
 		debug("logging in Other user: " + user + ":" + passwd);
 		assertTrue(logIn(user, passwd));
 		// assertTrue( withProtocol.getProtocol().equals("http"));
+        this.testLogOut();
+
 	}
 
 	/**
@@ -243,7 +255,11 @@ public class MetaCatServletTest extends MCTestCase {
     }
 		assertTrue(!logIn(user, passwd));
 		// assertTrue( withProtocol.getProtocol().equals("http"));
+        this.testLogOut();
+
 	}
+	
+
 
 	/**
 	 * Test insert a xml document successfully
@@ -254,7 +270,8 @@ public class MetaCatServletTest extends MCTestCase {
         try {
             String user = PropertyService.getProperty("test.mcUser");
             String passwd = PropertyService.getProperty("test.mcPassword");
-
+            metacat.login(user, passwd);
+            
             name = "john" + PropertyService.getProperty("document.accNumSeparator") + serialNumber + PropertyService.getProperty("document.accNumSeparator")
                     + "1";
             debug("insert docid: " + name);
@@ -265,9 +282,15 @@ public class MetaCatServletTest extends MCTestCase {
                     + "<permission>read</permission>" + "</allow>" + "</acl>";
             debug("xml document: " + content);
             assertTrue(handleXMLDocument(content, name, "insert"));
+            metacat.logout();
+
         } catch (PropertyNotFoundException pnfe) {
             fail("Could not find property: " + pnfe.getMessage());
-        }
+        } catch (Exception e) {
+			// TODO Auto-generated catch block
+			fail(e.getMessage());
+			e.printStackTrace();
+		}
     }
 
 	/**
@@ -280,6 +303,7 @@ public class MetaCatServletTest extends MCTestCase {
         try {
             String user = PropertyService.getProperty("test.mcUser");
             String passwd = PropertyService.getProperty("test.mcPassword");
+            metacat.login(user, passwd);
 
             name = "john" + PropertyService.getProperty("document.accNumSeparator") + serialNumber + PropertyService.getProperty("document.accNumSeparator")
                     + "1";
@@ -289,8 +313,10 @@ public class MetaCatServletTest extends MCTestCase {
                     + "<permission>read</permission>" + "</allow>" + "</acl>";
             debug("xml document: " + content);
             assertTrue(handleXMLDocument(content, name, "insert"));
-        } catch (PropertyNotFoundException pnfe) {
-            fail("Could not find property: " + pnfe.getMessage());
+            metacat.logout();
+
+        } catch (Exception pnfe) {
+            fail(pnfe.getMessage());
         }
     }
 
@@ -304,6 +330,7 @@ public class MetaCatServletTest extends MCTestCase {
         try {
             String user = PropertyService.getProperty("test.mcUser");
             String passwd = PropertyService.getProperty("test.mcPassword");
+            metacat.login(user, passwd);
 
             name = "john" + PropertyService.getProperty("document.accNumSeparator") + serialNumber + PropertyService.getProperty("document.accNumSeparator")
                     + "1";
@@ -314,8 +341,10 @@ public class MetaCatServletTest extends MCTestCase {
 
             debug("xml document: " + content);
             assertTrue(!handleXMLDocument(content, name, "insert"));
-        } catch (PropertyNotFoundException pnfe) {
-            fail("Could not find property: " + pnfe.getMessage());
+            this.testLogOut();
+
+        } catch (Exception pnfe) {
+            fail(pnfe.getMessage());
         }
     }
 
@@ -326,13 +355,17 @@ public class MetaCatServletTest extends MCTestCase {
 		debug("\nRunning: testReadXMLDocumentXMLFormat test");
 		String name = null;
 		try {
+			String user = PropertyService.getProperty("test.mcUser");
+            String passwd = PropertyService.getProperty("test.mcPassword");
+            metacat.login(user, passwd);
 			name = "john" + PropertyService.getProperty("document.accNumSeparator")
 					+ serialNumber
 					+ PropertyService.getProperty("document.accNumSeparator") + "1";
-		} catch (PropertyNotFoundException pnfe) {
+			assertTrue(handleReadAction(name, "xml"));
+			metacat.logout();
+		} catch (Exception pnfe) {
 			fail("Could not find property: " + pnfe.getMessage());
 		}
-		assertTrue(handleReadAction(name, "xml"));
 
 	}
 
@@ -343,13 +376,17 @@ public class MetaCatServletTest extends MCTestCase {
 		debug("\nRunning: testReadXMLDocumentHTMLFormat test");
 		String name = null;
 		try {
+			String user = PropertyService.getProperty("test.mcUser");
+            String passwd = PropertyService.getProperty("test.mcPassword");
+            metacat.login(user, passwd);
 			name = "john" + PropertyService.getProperty("document.accNumSeparator")
 					+ serialNumber
 					+ PropertyService.getProperty("document.accNumSeparator") + "1";
-		} catch (PropertyNotFoundException pnfe) {
-			fail("Could not find property: " + pnfe.getMessage());
+			assertTrue(handleReadAction(name, "html"));
+			metacat.logout();
+		} catch (Exception pnfe) {
+			fail(pnfe.getMessage());
 		}
-		assertTrue(handleReadAction(name, "html"));
 
 	}
 
@@ -360,13 +397,17 @@ public class MetaCatServletTest extends MCTestCase {
 		debug("\nRunning: testReadXMLDocumentZipFormat test");
 		String name = null;
 		try {
+			String user = PropertyService.getProperty("test.mcUser");
+            String passwd = PropertyService.getProperty("test.mcPassword");
+            metacat.login(user, passwd);
 			name = "john" + PropertyService.getProperty("document.accNumSeparator")
 					+ serialNumber
 					+ PropertyService.getProperty("document.accNumSeparator") + "1";
-		} catch (PropertyNotFoundException pnfe) {
-			fail("Could not find property: " + pnfe.getMessage());
+			assertTrue(handleReadAction(name, "zip"));
+			metacat.logout();
+		} catch (Exception pnfe) {
+			fail(pnfe.getMessage());
 		}
-		assertTrue(handleReadAction(name, "zip"));
 
 	}
 
@@ -380,6 +421,8 @@ public class MetaCatServletTest extends MCTestCase {
             String user = PropertyService.getProperty("test.mcUser");
             String passwd = PropertyService.getProperty("test.mcPassword");
 
+            metacat.login(user, passwd);
+            
             name = "john" + PropertyService.getProperty("document.accNumSeparator") + serialNumber + PropertyService.getProperty("document.accNumSeparator")
                     + "2";
             debug("update docid: " + name);
@@ -390,8 +433,9 @@ public class MetaCatServletTest extends MCTestCase {
                     + "<permission>read</permission>" + "</allow>" + "</acl>";
             debug("xml document: " + content);
             assertTrue(handleXMLDocument(content, name, "update"));
-        } catch (PropertyNotFoundException pnfe) {
-            fail("Could not find property: " + pnfe.getMessage());
+            this.testLogOut();
+        } catch (Exception pnfe) {
+            fail(pnfe.getMessage());
         }
     }
 
@@ -400,16 +444,24 @@ public class MetaCatServletTest extends MCTestCase {
 	 */
 	public void testDeleteXMLDocument() {
 		debug("\nRunning: testDeleteXMLDocument test");
+		
 		String name = null;
 		try {
+			String user = PropertyService.getProperty("test.mcUser");
+            String passwd = PropertyService.getProperty("test.mcPassword");
+            metacat.login(user, passwd);
+            
 			name = "john" + PropertyService.getProperty("document.accNumSeparator")
 					+ serialNumber
 					+ PropertyService.getProperty("document.accNumSeparator") + "2";
-		} catch (PropertyNotFoundException pnfe) {
-			fail("Could not find property: " + pnfe.getMessage());
+			debug("delete docid: " + name);
+			assertTrue(handleDeleteFile(name));
+			metacat.logout();
+			
+		} catch (Exception pnfe) {
+			fail(pnfe.getMessage());
 		}
-		debug("delete docid: " + name);
-		assertTrue(handleDeleteFile(name));
+		
 
 	}
 
@@ -493,7 +545,6 @@ public class MetaCatServletTest extends MCTestCase {
 
 		String response = getMetacatString(prop);
 		debug("Logout Message: " + response);
-		HttpMessage.setCookie(null);
 
 		if (response.indexOf("<logout>") != -1) {
 			disConnected = true;
@@ -608,6 +659,7 @@ public class MetaCatServletTest extends MCTestCase {
 			response = sw.toString();
 			sw.close();
 		} catch (Exception e) {
+			e.printStackTrace();
 			return null;
 		}
 
@@ -626,9 +678,7 @@ public class MetaCatServletTest extends MCTestCase {
 		// Now contact metacat and send the request
 		try {
 
-			URL url = new URL(metacatURL);
-			HttpMessage msg = new HttpMessage(url);
-			returnStream = msg.sendPostMessage(prop);
+			returnStream = metacat.sendParameters(prop);
 			return returnStream;
 		} catch (Exception e) {
 			e.printStackTrace(System.err);

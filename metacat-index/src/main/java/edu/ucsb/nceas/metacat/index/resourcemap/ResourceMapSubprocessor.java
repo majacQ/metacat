@@ -15,66 +15,50 @@
  */
 package edu.ucsb.nceas.metacat.index.resourcemap;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.StringWriter;
-import java.io.Writer;
 import java.net.MalformedURLException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathExpressionException;
-import javax.xml.xpath.XPathFactory;
 
 import org.apache.commons.codec.EncoderException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.solr.client.solrj.SolrServer;
+import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.common.SolrDocument;
-import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.params.SolrParams;
-import org.apache.solr.core.CoreContainer;
-import org.apache.solr.core.SolrCore;
-import org.apache.solr.request.LocalSolrQueryRequest;
-import org.apache.solr.response.QueryResponseWriter;
-import org.apache.solr.response.SolrQueryResponse;
-import org.apache.solr.schema.DateField;
+import org.apache.solr.common.util.NamedList;
 import org.apache.solr.schema.IndexSchema;
-import org.apache.solr.schema.SchemaField;
 import org.apache.solr.servlet.SolrRequestParsers;
-import org.dataone.cn.indexer.parser.AbstractDocumentSubprocessor;
+import org.dataone.cn.indexer.convert.SolrDateConverter;
+import org.dataone.cn.indexer.parser.BaseXPathDocumentSubprocessor;
 import org.dataone.cn.indexer.parser.IDocumentSubprocessor;
 import org.dataone.cn.indexer.resourcemap.ResourceMap;
 import org.dataone.cn.indexer.resourcemap.ResourceMapFactory;
 import org.dataone.cn.indexer.solrhttp.SolrDoc;
 import org.dataone.cn.indexer.solrhttp.SolrElementField;
+import org.dataone.configuration.Settings;
 import org.dataone.service.exceptions.NotFound;
 import org.dataone.service.exceptions.NotImplemented;
+import org.dataone.service.exceptions.ServiceFailure;
 import org.dataone.service.exceptions.UnsupportedType;
-import org.dataone.service.types.v1.Subject;
+import org.dataone.service.types.v1.Identifier;
+import org.dataone.service.util.DateTimeMarshaller;
 import org.dspace.foresite.OREParserException;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
-import edu.ucsb.nceas.metacat.common.query.SolrQueryResponseTransformer;
-import edu.ucsb.nceas.metacat.common.query.SolrQueryResponseWriterFactory;
-import edu.ucsb.nceas.metacat.common.query.SolrQueryServiceController;
 import edu.ucsb.nceas.metacat.common.SolrServerFactory;
+import edu.ucsb.nceas.metacat.common.query.SolrQueryServiceController;
+import edu.ucsb.nceas.metacat.index.ApplicationController;
+import edu.ucsb.nceas.metacat.index.DistributedMapsFactory;
 import edu.ucsb.nceas.metacat.index.SolrIndex;
 
 
@@ -83,19 +67,17 @@ import edu.ucsb.nceas.metacat.index.SolrIndex;
  * The solr doc of the ResourceMap self only has the system metadata information.
  * The solr docs of the science metadata doc and data file have the resource map package information.
  */
-public class ResourceMapSubprocessor extends AbstractDocumentSubprocessor implements IDocumentSubprocessor {
+public class ResourceMapSubprocessor extends BaseXPathDocumentSubprocessor implements IDocumentSubprocessor {
 
     private static final String QUERY ="q=id:";
+    private static final String QUERY2="q="+SolrElementField.FIELD_RESOURCEMAP+":";
     private static Log log = LogFactory.getLog(SolrIndex.class);
-    private static SolrServer solrServer =  null;
-    private static SolrCore solrCore = null;
-    private static CoreContainer solrCoreContainer = null;
+    private static SolrClient solrServer =  null;
+    private static int waitingTime = Settings.getConfiguration().getInt("index.resourcemap.waitingComponent.time", 100);
+    private static int maxAttempts = Settings.getConfiguration().getInt("index.resourcemap.waitingComponent.max.attempts", 5);
     static {
         try {
             solrServer = SolrServerFactory.createSolrServer();
-            CoreContainer solrCoreContainer = SolrServerFactory.getCoreContainer();
-            String coreName = SolrServerFactory.getCollectionName();
-            solrCore = solrCoreContainer.getCore(coreName);
         } catch (Exception e) {
             log.error("ResourceMapSubprocessor - can't generate the SolrServer since - "+e.getMessage());
         }
@@ -103,10 +85,16 @@ public class ResourceMapSubprocessor extends AbstractDocumentSubprocessor implem
           
     @Override
     public Map<String, SolrDoc> processDocument(String identifier, Map<String, SolrDoc> docs,
-    Document doc) throws IOException, EncoderException, SAXException,
-    XPathExpressionException, ParserConfigurationException, SolrServerException, NotImplemented, NotFound, UnsupportedType, OREParserException, ResourceMapException {
+    InputStream is) throws IOException, EncoderException, SAXException,
+    XPathExpressionException, ParserConfigurationException, SolrServerException, NotImplemented, NotFound, UnsupportedType, OREParserException, ResourceMapException, ServiceFailure, InterruptedException{
         SolrDoc resourceMapDoc = docs.get(identifier);
-        List<SolrDoc> processedDocs = processResourceMap(resourceMapDoc, doc);
+        //Document doc = XmlDocumentUtility.generateXmlDocument(is);
+        Identifier id = new Identifier();
+        id.setValue(identifier);
+        
+        //Get the path to the resource map file
+        String resourcMapPath = DistributedMapsFactory.getObjectPathMap().get(id);
+		List<SolrDoc> processedDocs = processResourceMap(resourceMapDoc, resourcMapPath);
         Map<String, SolrDoc> processedDocsMap = new HashMap<String, SolrDoc>();
         for (SolrDoc processedDoc : processedDocs) {
             processedDocsMap.put(processedDoc.getIdentifier(), processedDoc);
@@ -114,10 +102,11 @@ public class ResourceMapSubprocessor extends AbstractDocumentSubprocessor implem
         return processedDocsMap;
     }
 
-    private List<SolrDoc> processResourceMap(SolrDoc indexDocument, Document resourceMapDocument)
-                    throws XPathExpressionException, IOException, SAXException, ParserConfigurationException, EncoderException, SolrServerException, NotImplemented, NotFound, UnsupportedType, OREParserException, ResourceMapException{
+    private List<SolrDoc> processResourceMap(SolrDoc indexDocument, String resourcMapPath)
+                    throws XPathExpressionException, IOException, SAXException, ParserConfigurationException, EncoderException, SolrServerException, NotImplemented, NotFound, UnsupportedType, OREParserException, ResourceMapException, InterruptedException{
         //ResourceMap resourceMap = new ResourceMap(resourceMapDocument);
-        ResourceMap resourceMap = ResourceMapFactory.buildResourceMap(resourceMapDocument);
+        IndexVisibilityHazelcastImplWithArchivedObj indexVisitility = new IndexVisibilityHazelcastImplWithArchivedObj();
+        ResourceMap resourceMap = ResourceMapFactory.buildResourceMap(resourcMapPath, indexVisitility);
         List<String> documentIds = resourceMap.getAllDocumentIDs();//this list includes the resourceMap id itself.
         //List<SolrDoc> updateDocuments = getHttpService().getDocuments(getSolrQueryUri(), documentIds);
         List<SolrDoc> updateDocuments = getSolrDocs(resourceMap.getIdentifier(), documentIds);
@@ -135,15 +124,30 @@ public class ResourceMapSubprocessor extends AbstractDocumentSubprocessor implem
         return mergedDocuments;
     }
     
-    private List<SolrDoc> getSolrDocs(String resourceMapId, List<String> ids) throws SolrServerException, IOException, ParserConfigurationException, SAXException, XPathExpressionException, NotImplemented, NotFound, UnsupportedType, ResourceMapException {
+    private List<SolrDoc> getSolrDocs(String resourceMapId, List<String> ids) throws SolrServerException, IOException, ParserConfigurationException, SAXException, XPathExpressionException, NotImplemented, NotFound, UnsupportedType, ResourceMapException, InterruptedException {
         List<SolrDoc> list = new ArrayList<SolrDoc>();
         if(ids != null) {
             for(String id : ids) {
-                SolrDoc doc = getSolrDoc(id);
+            	SolrDoc doc = getSolrDoc(id);
                 if(doc != null) {
                     list.add(doc);
                 } else if ( !id.equals(resourceMapId)) {
-                    throw new ResourceMapException("Solr index doesn't have the information about the id "+id+" which is a component in the resource map "+resourceMapId+". Metacat-Index can't process the resource map prior to its components.");
+                    for (int i=0; i<maxAttempts; i++) {
+                        Thread.sleep(waitingTime);
+                        doc = getSolrDoc(id);
+                        log.debug("ResourceMapSubprocessor.getSolrDocs - the " + (i+1) + " time to wait " + 
+                                   waitingTime + " to get the solr doc for " + id);
+                        if (doc != null) {
+                            break;
+                        }
+                    }
+                    if (doc != null) {
+                        list.add(doc);
+                    } else {
+                        throw new ResourceMapException("Solr index doesn't have the information about the id "+id+
+                                " which is a component in the resource map "+resourceMapId+
+                                ". Metacat-Index can't process the resource map prior to its components.");
+                    }
                 }
             }
         }
@@ -157,7 +161,7 @@ public class ResourceMapSubprocessor extends AbstractDocumentSubprocessor implem
         List<SolrDoc> list = new ArrayList<SolrDoc>();
         if(ids != null) {
             for(String id : ids) {
-                SolrDoc doc = getSolrDoc(id);
+            	SolrDoc doc = getSolrDoc(id);
                 if(doc != null) {
                     list.add(doc);
                 }
@@ -166,94 +170,141 @@ public class ResourceMapSubprocessor extends AbstractDocumentSubprocessor implem
         return list;
     }
     
-    /*
-     * Get the SolrDoc for the specified id 
-     */
-    public static SolrDoc getSolrDoc(String id) throws SolrServerException, IOException, ParserConfigurationException, SAXException, XPathExpressionException, NotImplemented, NotFound, UnsupportedType {
-        SolrDoc solrDoc = null;
-        if(solrServer != null) {
-           String query = QUERY+"\""+id+"\"";
-           SolrParams solrParams = SolrRequestParsers.parseQueryString(query);
-           Set<Subject>subjects = null;//when subjects are null, there will not be any access rules.
-           InputStream response = SolrQueryServiceController.getInstance().query(solrParams, subjects);
-           solrDoc = transformQueryResponseToSolrDoc(solrParams, response);
-           
-           /*if(solrDoc != null) {
-               ByteArrayOutputStream out = new ByteArrayOutputStream();
-               solrDoc.serialize(out, "UTF-8");
-               String result = new String(out.toByteArray(), "UTF-8");
-               System.out.println("need to be updated document ===========================");
-               System.out.println(result);
-           }*/
-           
-        }
-        return solrDoc;
-    }
-    
-    /*
-     * Transform a Solr QueryReponse to a SolrDoc. The QueryReponse contains a list of
-     * SolrDocuments. This method will transform the first SolrDocuments (in the Solr lib) to
-     * the SolrDoc (in the d1_cn_index_processor lib).
-     * @param reponse
-     * @return
-     */
-    private static SolrDoc transformQueryResponseToSolrDoc(SolrParams solrParams, InputStream response) throws SolrServerException, IOException, ParserConfigurationException, SAXException, XPathExpressionException, UnsupportedType, NotFound {
-        SolrDoc solrDoc = null;
-        if(response != null) {
-            DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
-            DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
-            Document doc = dBuilder.parse(response);
-            solrDoc = parseResults(doc);
-        }
-        return solrDoc;
-    }
-    
-   
-    
-    /*
-     * Parse the query result document. This method only choose the first one from a list.
-     */
-    private static SolrDoc parseResults(Document document) throws XPathExpressionException, MalformedURLException, UnsupportedType, NotFound, ParserConfigurationException, IOException, SAXException {
-        SolrDoc solrDoc = null;
-        NodeList nodeList = (NodeList) XPathFactory.newInstance().newXPath()
-                .evaluate("/response/result/doc", document, XPathConstants.NODESET);
-        if(nodeList != null && nodeList.getLength() >0) {
-            Element docElement = (Element) nodeList.item(0);
-            solrDoc = parseDoc(docElement);
-        }
-        return solrDoc;
-    }
-
-    
-    /*
-     * Parse an element
-     */
-    private static SolrDoc parseDoc(Element docElement) throws MalformedURLException, UnsupportedType, NotFound, ParserConfigurationException, IOException, SAXException {
-        List<String> validSolrFieldNames = SolrQueryServiceController.getInstance().getValidSchemaFields();
-        SolrDoc doc = new SolrDoc();
-        doc.LoadFromElement(docElement, validSolrFieldNames);
-        return doc;
-    }
-    
-    
-    /**
-     * Get the valid schema fields from the solr server.
-     * @return
-     */
-    /*private static List<String> getValidSchemaField() {
-        List<String> validSolrFieldNames = new ArrayList<String>();
-        IndexSchema schema = solrCore.getSchema();
-        Map<String, SchemaField> fieldMap = schema.getFields();
-        Set<String> fieldNames = fieldMap.keySet();
-        for(String fieldName : fieldNames) {
-            SchemaField field = fieldMap.get(fieldName);
-            //remove the field which is the target field of a CopyField.
-            if(field != null && !schema.isCopyFieldTarget(field)) {
-                 validSolrFieldNames.add(fieldName);
+	/*
+	 * Get the SolrDoc for the specified id
+	 */
+	public static SolrDoc getSolrDoc(String id) throws SolrServerException,
+			IOException, ParserConfigurationException, SAXException,
+			XPathExpressionException, NotImplemented, NotFound, UnsupportedType {
+	    int targetIndex = 0;
+		SolrDoc doc = null;
+		String query = QUERY + "\"" + id + "\"";
+		boolean ignoreArchivedObjecst = false;
+	    List<SolrDoc> list = getDocumentsByQuery(query, ignoreArchivedObjecst);
+	    if(list != null && !list.isEmpty()) {
+	        doc = list.get(targetIndex);
+	    }
+		return doc;
+	}
+	
+	/**
+	 * Gets a single solr document that is at the top of the version chain for the given seriesId
+	 * @param seriesId - the target object's seriesId
+	 * @return the SolrDoc
+	 * @throws MalformedURLException
+	 * @throws UnsupportedType
+	 * @throws NotFound
+	 * @throws SolrServerException
+	 * @throws ParserConfigurationException
+	 * @throws IOException
+	 * @throws SAXException
+	 */
+	public static SolrDoc getDocumentBySeriesId(String seriesId) throws MalformedURLException, 
+	            UnsupportedType, NotFound, SolrServerException, ParserConfigurationException, IOException, SAXException {
+	    
+		//Contruct a query to search for the most recent SolrDoc with the given seriesId
+		String query = "q=" + SolrElementField.FIELD_SERIES_ID + ":\"" + seriesId + "\" AND -obsoletedBy:*";
+		
+		//Ignore archived objects for this query
+	    boolean ignoreArchivedObjects = true;
+	    
+	    //Get the SolrDoc by querying for it
+	    List<SolrDoc> list = getDocumentsByQuery(query, ignoreArchivedObjects);
+	    	    
+	    //If query results were found, get the first one (only one result should be found anyway)
+	    SolrDoc doc = null;
+	    if(list != null && !list.isEmpty()) {
+	        doc = list.get(0);
+	    }
+	    
+	    return doc;
+	}
+	
+	/**
+	 * Get a list of solr documents which's resourcemap field matches the given value.
+	 * @param resourceMapId - the target resource map id
+	 * @return the list of solr document 
+	 * @throws MalformedURLException
+	 * @throws UnsupportedType
+	 * @throws NotFound
+	 * @throws SolrServerException
+	 * @throws ParserConfigurationException
+	 * @throws IOException
+	 * @throws SAXException
+	 */
+	public static List<SolrDoc> getDocumentsByResourceMap(String resourceMapId) throws MalformedURLException, 
+	            UnsupportedType, NotFound, SolrServerException, ParserConfigurationException, IOException, SAXException {
+	    String query = QUERY2 + "\"" + resourceMapId + "\"";
+	    boolean ignoreArchivedObjects = false;
+	    return getDocumentsByQuery(query, ignoreArchivedObjects);
+	}
+	
+	/**
+	 * Get a list of slor docs which match the query.
+	 * @param query - a string of a query
+	 * @param ignoreArchivedObjects - if the returned objects includes the archived objects. True means excluding them; false mean including
+	 * @return a list of SolrDocs matching the query
+	 * @throws SolrServerException
+	 * @throws MalformedURLException
+	 * @throws UnsupportedType
+	 * @throws NotFound
+	 * @throws ParserConfigurationException
+	 * @throws IOException
+	 * @throws SAXException
+	 */
+	public static List<SolrDoc> getDocumentsByQuery(String query, boolean ignoreArdhivedObjects) throws SolrServerException, MalformedURLException, UnsupportedType, 
+	                                                                NotFound, ParserConfigurationException, IOException, SAXException {
+	    List<SolrDoc> docs = new ArrayList<SolrDoc>();
+	    if (solrServer != null && query != null && !query.trim().equals("")) {
+            SolrParams solrParams = SolrRequestParsers.parseQueryString(query);
+            if(!ignoreArdhivedObjects) {
+                if(ApplicationController.getIncludeArchivedQueryParaName() != null && !ApplicationController.getIncludeArchivedQueryParaName().trim().equals("") && 
+                        ApplicationController.getIncludeArchivedQueryParaValue() != null && !ApplicationController.getIncludeArchivedQueryParaValue().trim().equals("")) {
+                    //query.set(ApplicationController.getQueryParaName(), ApplicationController.getQueryParaValue());
+                    NamedList<String> appendIncludingArchiveList = new NamedList<String>();
+                    appendIncludingArchiveList.add(ApplicationController.getIncludeArchivedQueryParaName(), ApplicationController.getIncludeArchivedQueryParaValue());
+                    //System.out.println("The name list was added+++++++++++++++++++++++++=");
+                    SolrParams appendIncludingArchive = SolrParams.toSolrParams(appendIncludingArchiveList);
+                    solrParams = SolrParams.wrapAppended(appendIncludingArchive, solrParams);
+                }
             }
-        }
-        //System.out.println("the valid file name is\n"+validSolrFieldNames);
-        return validSolrFieldNames;
-    }*/
+            /*NamedList list = solrParams.toNamedList();
+            for(int i=0; i<list.size(); i++) {
+                String name = list.getName(i);
+                Object value = list.getVal(i);
+                System.out.println("=========================the property name is "+name+" with value "+value.toString()+" or "+value+" at index "+i);
+            }*/
+            QueryResponse qr = solrServer.query(solrParams);
+            if (qr != null && qr.getResults() != null) {
+                for(int i=0; i<qr.getResults().size(); i++) {
+                    SolrDocument orig = qr.getResults().get(i);
+                    SolrDoc doc = new SolrDoc();
+                    IndexSchema indexSchema = SolrQueryServiceController.getInstance().getSchema();
+                    for (String fieldName : orig.getFieldNames()) {
+                        // don't transfer the copyTo fields, otherwise there are errors
+                        if (indexSchema.isCopyFieldTarget(indexSchema.getField(fieldName))) {
+                            continue;
+                        }
+                        for (Object value : orig.getFieldValues(fieldName)) {
+                            String stringValue = value.toString();
+                            // special handling for dates in ISO 8601
+                            if (value instanceof Date) {
+                                stringValue = DateTimeMarshaller.serializeDateToUTC((Date) value);
+                                SolrDateConverter converter = new SolrDateConverter();
+                                stringValue = converter.convert(stringValue);
+                            }
+                            SolrElementField field = new SolrElementField(fieldName, stringValue);
+                            log.debug("Adding field: " + fieldName);
+                            doc.addField(field);
+                        }
+                    }
+                    docs.add(doc);
+                }
+                
+            }
+	    }
+	    return docs;
+	}
+
 
 }

@@ -38,7 +38,8 @@ import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.filefilter.DirectoryFileFilter;
 import org.apache.commons.io.filefilter.OrFileFilter;
 import org.apache.commons.io.filefilter.WildcardFileFilter;
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.metacat.MetacatVersion;
 import edu.ucsb.nceas.metacat.database.DBVersion;
@@ -63,7 +64,7 @@ public class PropertiesAdmin extends MetacatAdmin {
     private static String DEFAULTMETACATCONTEXT = "metacat";
     private static String METACATPROPERTYAPPENDIX = "/WEB-INF/metacat.properties";
 	private static PropertiesAdmin propertiesAdmin = null;
-	private static Logger logMetacat = Logger.getLogger(PropertiesAdmin.class);
+	private static Log logMetacat = LogFactory.getLog(PropertiesAdmin.class);
 
 	/**
 	 * private constructor since this is a singleton
@@ -111,7 +112,7 @@ public class PropertiesAdmin extends MetacatAdmin {
 				
 				if (externalDir == null) {
 					throw new AdminException("Could not initialize property configuration "
-									+ "page recommended application backup directory was null");
+									+ "page recommended application external directory was null");
 				}
 				
 				// Attempt to discover the following properties.  These will show
@@ -140,6 +141,7 @@ public class PropertiesAdmin extends MetacatAdmin {
 						externalDir + FileUtil.getFS() + "solr-home");
 
 				PropertyService.persistProperties();
+				PropertyService.syncToSettings();
 
 				// Add the list of properties from metacat.properties to the request
 				Vector<String> propertyNames = PropertyService.getPropertyNames();
@@ -195,10 +197,20 @@ public class PropertiesAdmin extends MetacatAdmin {
 				for (String name : propertyNames) {
 					PropertyService.checkAndSetProperty(request, name);
 				}
-
 				// we need to write the options from memory to the properties
 				// file
 				PropertyService.persistProperties();
+				
+				//auto generate the dataone.mn.baseURL property
+				try {
+				    PropertyService.getInstance().setProperty("dataone.mn.baseURL", SystemUtil.getInternalContextURL()+"/"+
+				            PropertyService.getProperty("dataone.serviceName")+"/" + PropertyService.getProperty("dataone.nodeType"));
+                } catch (Exception ue) {
+                    String errorString = "PropertiesAdmin.configureProperties - Could not set the property  dataone.mn.baseURL: " +
+                    ue.getMessage();
+                    logMetacat.error(errorString);
+                    validationErrors.add(errorString);
+                }
 
 				// Validate that the options provided are legitimate. Note that
 				// we've allowed them to persist their entries. As of this point
@@ -261,38 +273,22 @@ public class PropertiesAdmin extends MetacatAdmin {
 					validationErrors.add(errorString);
 				}
 				
-				// Try to create and initialize the solr-home directory if necessary.
+				//make sure the solrHome is not old version of Lucene
 				String solrHomePath = PropertyService.getProperty("solr.homeDir");
-				String indexContext = PropertyService.getProperty("index.context");
-				boolean solrHomeExists = new File(solrHomePath).exists();
-				if (!solrHomeExists) {
-					try {
-						String metacatWebInf = ServiceService.getRealConfigDir();
-						String metacatIndexSolrHome = metacatWebInf + "/../../" + indexContext + "/WEB-INF/classes/solr-home";
-						// only attempt to copy if we have the source directory to copy from
-						File sourceDir = new File(metacatIndexSolrHome);
-						if (sourceDir.exists()) {
-							FileUtil.createDirectory(solrHomePath);
-							OrFileFilter fileFilter = new OrFileFilter();
-							fileFilter.addFileFilter(DirectoryFileFilter.DIRECTORY);
-							fileFilter.addFileFilter(new WildcardFileFilter("*"));
-							FileUtils.copyDirectory(new File(metacatIndexSolrHome), new File(solrHomePath), fileFilter );
-						}
-					} catch (Exception ue) {	
-						String errorString = "PropertiesAdmin.configureProperties - Could not initialize directory: " + solrHomePath +
-								" : " + ue.getMessage();
-						logMetacat.error(errorString);
-						validationErrors.add(errorString);
-					}
-				} else {
-					// check it
-					if (!FileUtil.isDirectory(solrHomePath)) {
-						String errorString = "PropertiesAdmin.configureProperties - SOLR home is not a directory: " + solrHomePath;
-						logMetacat.error(errorString);
-						validationErrors.add(errorString);
-					}
+				boolean isOldVersion = false;
+				try {
+				    SolrVersionChecker checker = new SolrVersionChecker();
+				    isOldVersion = checker.isVersion_3_4(solrHomePath);
+				} catch (Exception e) {
+				    logMetacat.warn("PropertiesAdmin.confgureProperties - we can't determine if the given directory is a old version of solr  since "+e.getMessage()+". But we consider it is not an old version.");
 				}
 				
+				if(isOldVersion) {
+				    validationErrors.add("The solr home you chose exists with an old version of SOLR. Please choose a new SOLR home!");
+				}
+				
+				
+				String indexContext = PropertyService.getProperty("index.context");
 				//modify some params of the index context
 				this.modifyIndexContextParams(indexContext);
 				
@@ -352,6 +348,14 @@ public class PropertiesAdmin extends MetacatAdmin {
 							dbVersion.compareTo(metacatVersion) == 0) {
 						PropertyService.setProperty("configutil.databaseConfigured", 
 								PropertyService.CONFIGURED);
+						//Also set the upgrade status to be success since the upgrade happened successfully at the previous upgrade
+						try {
+						    boolean persist = true;
+			                MetacatAdmin.updateUpgradeStatus("configutil.upgrade.database.status", MetacatAdmin.SUCCESS, persist);
+			                MetacatAdmin.updateUpgradeStatus("configutil.upgrade.java.status", MetacatAdmin.SUCCESS, persist);
+			            } catch (Exception e) {
+			                logMetacat.warn("PropertiesAdmin.configureProperties - couldn't update the status of the upgrading process since " + e.getMessage());
+			            }
 					}
 					
 					// Reload the main metacat configuration page
@@ -429,7 +433,7 @@ public class PropertiesAdmin extends MetacatAdmin {
                 //System.out.println("============================== the web.xml file is "+indexConfigFile);
                 String configContents = FileUtil.readFileToString(hzConfigFile, "UTF-8");
                 //System.out.println("============================== the content of web.xml file is "+configContents);
-                configContents = configContents.replace("<name>DataONE</name>", "<name>" + metacatContext + "</name>");
+                configContents = configContents.replace("<name>metacat</name>", "<name>" + metacatContext + "</name>");
                 FileUtil.writeFile(hzConfigFile, new StringReader(configContents), "UTF-8");
             }
             

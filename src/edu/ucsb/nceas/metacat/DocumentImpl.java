@@ -40,7 +40,11 @@ import java.io.OutputStreamWriter;
 import java.io.Reader;
 import java.io.StringReader;
 import java.io.Writer;
+import java.math.BigInteger;
 import java.net.URL;
+import java.security.DigestOutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -63,10 +67,13 @@ import edu.ucsb.nceas.utilities.access.AccessControlInterface;
 import edu.ucsb.nceas.metacat.accesscontrol.AccessControlList;
 import edu.ucsb.nceas.metacat.client.InsufficientKarmaException;
 import edu.ucsb.nceas.metacat.common.query.EnabledQueryEngines;
+import edu.ucsb.nceas.metacat.common.resourcemap.ResourceMapNamespaces;
 import edu.ucsb.nceas.metacat.database.DBConnection;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
 import edu.ucsb.nceas.metacat.database.DatabaseService;
+import edu.ucsb.nceas.metacat.dataone.SyncAccessPolicy;
 import edu.ucsb.nceas.metacat.dataone.hazelcast.HazelcastService;
+import edu.ucsb.nceas.metacat.index.MetacatSolrIndex;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.replication.ForceReplicationHandler;
 import edu.ucsb.nceas.metacat.replication.ReplicationService;
@@ -82,11 +89,15 @@ import edu.ucsb.nceas.utilities.FileUtil;
 import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 import edu.ucsb.nceas.utilities.UtilException;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.input.XmlStreamReader;
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.dataone.service.exceptions.InvalidSystemMetadata;
+import org.dataone.service.types.v1.Checksum;
 import org.dataone.service.types.v1.Identifier;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.dataone.service.types.v2.SystemMetadata;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
 import org.xml.sax.EntityResolver;
@@ -104,12 +115,16 @@ public class DocumentImpl
 {
     /* Constants */
     public static final String SCHEMA = "Schema";
+    public static final String NONAMESPACESCHEMA = "NoNamespaceSchema";
     public static final String DTD = "DTD";
     public static final String EML200 = "eml200";
     public static final String EML210 = "eml210";
     public static final String EXTERNALSCHEMALOCATIONPROPERTY = "http://apache.org/xml/properties/schema/external-schemaLocation";
+    public static final String EXTERNALNONAMESPACESCHEMALOCATIONPROPERTY = "http://apache.org/xml/properties/schema/external-noNamespaceSchemaLocation";
     public static final String REVISIONTABLE = "xml_revisions";
     public static final String DOCUMENTTABLE = "xml_documents";
+    public static final String BIN = "BIN";
+    
     /*
      * public static final String EXTERNALSCHEMALOCATION =
      * "eml://ecoinformatics.org/eml-2.0.0
@@ -129,6 +144,7 @@ public class DocumentImpl
     public static final String EML2_0_1NAMESPACE;
     public static final String EML2_1_0NAMESPACE;
     public static final String EML2_1_1NAMESPACE;
+    public static final String EML2_2_0NAMESPACE;
     public static final String RDF_SYNTAX_NAMESPACE;
     
     static {
@@ -136,18 +152,21 @@ public class DocumentImpl
     	String eml201NameSpace = null;
     	String eml210NameSpace = null;
     	String eml211NameSpace = null;
+    	String eml220NameSpace = null;
     	String rdfNameSpace = null;
     	try {
     		eml200NameSpace = PropertyService.getProperty("xml.eml2_0_0namespace");
     		eml201NameSpace = PropertyService.getProperty("xml.eml2_0_1namespace");
     		eml210NameSpace = PropertyService.getProperty("xml.eml2_1_0namespace");
     		eml211NameSpace = PropertyService.getProperty("xml.eml2_1_1namespace");
+    		eml220NameSpace = PropertyService.getProperty("xml.eml2_2_0namespace");
     		rdfNameSpace = PropertyService.getProperty("xml.rdf_syntax_namespace");
     	} catch (PropertyNotFoundException pnfe) {
     		System.err.println("Could not get property in static block: " 
 					+ pnfe.getMessage());
     	}
     	
+    	EML2_2_0NAMESPACE = eml220NameSpace;
     	EML2_1_1NAMESPACE = eml211NameSpace;
         // "eml://ecoinformatics.org/eml-2.1.1";
     	EML2_1_0NAMESPACE = eml210NameSpace;
@@ -186,8 +205,8 @@ public class DocumentImpl
     
     private Vector<String> pathsForIndexing = null;
   
-    private static Logger logMetacat = Logger.getLogger(DocumentImpl.class);
-    private static Logger logReplication = Logger.getLogger("ReplicationLogging");
+    private static Log logMetacat = LogFactory.getLog(DocumentImpl.class);
+    private static Log logReplication = LogFactory.getLog("ReplicationLogging");
 
     /**
      * Default constructor
@@ -1117,7 +1136,7 @@ public class DocumentImpl
                 && (doctype.equals(EML2_0_0NAMESPACE)
                         || doctype.equals(EML2_0_1NAMESPACE) 
                         || doctype.equals(EML2_1_0NAMESPACE)
-                		|| doctype.equals(EML2_1_1NAMESPACE))) {
+                		|| doctype.equals(EML2_1_1NAMESPACE) || doctype.equals(EML2_2_0NAMESPACE) )) {
             proccessEml2 = true;
         }
         // flag for process inline data
@@ -1493,11 +1512,14 @@ public class DocumentImpl
 	 * @param accNumber
 	 *            the document id which is used to name the output file
 	 */
-    private static void writeToFileSystem(String xml, String accNumber, String encoding) throws McdbException {
+    private static void writeToFileSystem(byte[] xml, String accNumber, Checksum checksum, File objectFile) throws McdbException, InvalidSystemMetadata, IOException {
 
 		// write the document to disk
 		String documentDir = null;
 		String documentPath = null;
+		boolean needCalculateChecksum = false;
+		String checksumValue = null;
+		MessageDigest md = null;
 
 		try {				
 			documentDir = PropertyService.getProperty("application.documentfilepath");
@@ -1519,19 +1541,65 @@ public class DocumentImpl
 			if (accNumber != null
 					&& (FileUtil.getFileStatus(documentPath) == FileUtil.DOES_NOT_EXIST 
 							|| FileUtil.getFileSize(documentPath) == 0)) {
+			    if (objectFile != null && objectFile.exists()) {
+			        logMetacat.info("DocumentImpl.writeToFileSystem - the object file already exists at the temp location and the checksum was checked. Metacat only needs to move it to the permanent position " + documentPath);
+			        File permanentFile = new File(documentPath);
+			        FileUtils.moveFile(objectFile, permanentFile);
+			    } else {
+			        logMetacat.info("DocumentImpl.writeToFileSystem - Metacat needs to write the metadata bytes into the file  " + documentPath);
+			        if (checksum != null) {
+	                    needCalculateChecksum = true;
+	                    checksumValue = checksum.getValue();
+	                    logMetacat.info("DocumentImpl.writeToFileSystem - the checksum from the system metadata is " + checksumValue);
+	                    if (checksumValue == null || checksumValue.trim().equals("")) {
+	                        logMetacat.error("DocumentImpl.writeToFileSystem - the checksum value from the system metadata shouldn't be null or blank");
+	                        throw new InvalidSystemMetadata("1180", "The checksum value from the system metadata shouldn't be null or blank.");
+	                    }
+	                    String algorithm = checksum.getAlgorithm();
+	                    logMetacat.info("DocumentImpl.writeToFileSystem - the algorithm to calculate the checksum from the system metadata is " + algorithm);
+	                    if (algorithm == null || algorithm.trim().equals("")) {
+	                        logMetacat.error("DocumentImpl.writeToFileSystem - the algorithm to calculate the checksum from the system metadata shouldn't be null or blank");
+	                        throw new InvalidSystemMetadata("1180", "The algorithm to calculate the checksum from the system metadata shouldn't be null or blank.");
+	                    }
+	                    try {
+	                        md = MessageDigest.getInstance(algorithm);
+	                    } catch (NoSuchAlgorithmException ee) {
+	                        logMetacat.error("DocumentImpl.writeToFileSystem - we don't support the algorithm " + algorithm + " to calculate the checksum.", ee);
+	                        throw new InvalidSystemMetadata("1180", "The algorithm " + algorithm + " to calculate the checksum is not supported: " + ee.getMessage());
+	                    }
+	                }
 
-			    FileOutputStream fos = null;
-                try {
-                    fos = new FileOutputStream(documentPath);
-                    IOUtils.write(xml.getBytes(encoding), fos);
-
-                    fos.flush();
-                    fos.close();
-                } catch (IOException ioe) {
-                    throw new McdbException("Could not write file: " + documentPath + " : " + ioe.getMessage());
-                } finally {
-                    IOUtils.closeQuietly(fos);
-                }
+	                OutputStream fos = null;
+	                try {
+	                    if (needCalculateChecksum) {
+	                        logMetacat.info("DocumentImpl.writeToFileSystem - we need to compute the checksum since it is from DataONE API");
+	                        fos = new DigestOutputStream(new FileOutputStream(documentPath), md);
+	                    } else {
+	                        logMetacat.info("DocumentImpl.writeToFileSystem - we don't need to compute the checksum since it is from Metacat API or the checksum has been verified.");
+	                        fos = new FileOutputStream(documentPath);
+	                    }
+	                    
+	                    IOUtils.write(xml, fos);
+	                    fos.flush();
+	                    fos.close();
+	                    if (needCalculateChecksum) {
+	                        String localChecksum = DatatypeConverter.printHexBinary(md.digest());
+	                        logMetacat.info("DocumentImpl.writeToFileSystem - the check sum calculated from the saved local file is " + localChecksum);
+	                        if (localChecksum == null || localChecksum.trim().equals("") || !localChecksum.equalsIgnoreCase(checksumValue)) {
+	                            logMetacat.error("DocumentImpl.writeToFileSystem - the check sum calculated from the saved local file is " + localChecksum + ". But it doesn't match the value from the system metadata " + checksumValue);
+	                            File newFile = new File(documentPath);
+	                            boolean success = newFile.delete();
+	                            logMetacat.info("Delete the file " + newFile.getAbsolutePath() + " sucessfully? " + success);
+	                            throw new InvalidSystemMetadata("1180", "The checksum calculated from the saved local file is " + localChecksum + ". But it doesn't match the value from the system metadata " + checksumValue + ".");
+	                        }
+	                    }
+	                } catch (IOException ioe) {
+	                    throw new McdbException("Could not write file: " + documentPath + " : " + ioe.getMessage());
+	                } finally {
+	                    IOUtils.closeQuietly(fos);
+	                }
+			    }
+			    
 			}			
 
 		} catch (PropertyNotFoundException pnfe) {
@@ -1547,18 +1615,37 @@ public class DocumentImpl
      * @param isXml
      * @throws McdbException
      */
-    private static void deleteFromFileSystem(String accNumber, boolean isXml) throws McdbException {
+    public static void deleteFromFileSystem(String accNumber, boolean isXml) throws McdbException {
 
     	// must have an id
     	if (accNumber == null) {
 			throw new McdbException("Could not delete file.  Accession Number number is null" );
 		}
     	
-		// remove the document from disk
-		String documentDir = null;
-		String documentPath = null;
-
-		try {
+		// remove the document from disk	
+    	String documentPath = null;
+	
+		// get the correct location on disk
+		documentPath = getFilePath(accNumber, isXml);
+		// delete it if it exists			
+		if (accNumber != null && FileUtil.getFileStatus(documentPath) != FileUtil.DOES_NOT_EXIST) {
+			    try {
+			    	FileUtil.deleteFile(documentPath);
+			    } catch (IOException ioe) {
+			        throw new McdbException("Could not delete file: " + documentPath + " : " + ioe.getMessage());
+			    }
+		}			
+		
+	}
+    
+    private static String getFilePath(String accNumber, boolean isXml) throws McdbException{
+    	if (accNumber == null) {
+			throw new McdbException("Could not get the file path since the Accession Number number is null" );
+		}
+    	String documentPath = null;
+    	try {
+    		String documentDir = null;
+    		
 			// get the correct location on disk
 			if (isXml) {
 				documentDir = PropertyService.getProperty("application.documentfilepath");
@@ -1566,20 +1653,13 @@ public class DocumentImpl
 				documentDir = PropertyService.getProperty("application.datafilepath");
 			}
 			documentPath = documentDir + FileUtil.getFS() + accNumber;
-
-			// delete it if it exists			
-			if (accNumber != null && FileUtil.getFileStatus(documentPath) != FileUtil.DOES_NOT_EXIST) {
-			    try {
-			    	FileUtil.deleteFile(documentPath);
-			    } catch (IOException ioe) {
-			        throw new McdbException("Could not delete file: " + documentPath + " : " + ioe.getMessage());
-			    }
-			}			
+			return documentPath;
+			
 		} catch (PropertyNotFoundException pnfe) {
 			throw new McdbException(pnfe.getClass().getName() + ": Could not delete file because: " 
 					+ documentPath + " : " + pnfe.getMessage());
 		}
-	}
+    }
     
     /**
 	 * Strip out an inline data section from a 2.0.X version document. This assumes 
@@ -1782,7 +1862,7 @@ public class DocumentImpl
                     
                     currentNode.setNodeType(parentNode.getNodeType());
                     currentNode.setNodeName("");
-                    logMetacat.debug("DocumentImpl.buildIndex - Converted node " + currentNode.getNodeId() + 
+                    logMetacat.trace("DocumentImpl.buildIndex - Converted node " + currentNode.getNodeId() + 
                       " to type " + parentNode.getNodeType());
                     
                   	traverseParents(nodeRecordMap, rootNodeId,
@@ -1793,7 +1873,7 @@ public class DocumentImpl
                 }
                 // Lastly, update the xml_path_index table
                 if(!pathsFound.isEmpty()){
-                	logMetacat.debug("DocumentImpl.buildIndex - updating path index");
+                	logMetacat.trace("DocumentImpl.buildIndex - updating path index");
                     	
                 	updatePathIndex(dbConn, pathsFound);
 
@@ -1882,7 +1962,7 @@ public class DocumentImpl
                 if (current.getNodeType().equals("ATTRIBUTE")) {
                     currentName = "@" + currentName;
                 }
-                logMetacat.debug("DocumentImpl.traverseParents - A: " + currentName +"\n");
+                logMetacat.trace("DocumentImpl.traverseParents - A: " + currentName +"\n");
                 if ( currentName != null ) {
                   if ( !currentName.equals("") ) {
                     pathList.put(currentName, new PathIndexEntry(leafNodeId,
@@ -1891,7 +1971,7 @@ public class DocumentImpl
                 }
 				if (pathsForIndexing.contains(currentName)
 						&& leafData.trim().length() != 0) {
-					logMetacat.debug("DocumentImpl.traverseParents - paths found for indexing: " + currentName);
+					logMetacat.trace("DocumentImpl.traverseParents - paths found for indexing: " + currentName);
 					pathsFoundForIndexing.put(currentName, new PathIndexEntry(
 							leafNodeId, currentName, docid, leafParentId, leafData,
 							leafDataNumerical, leafDataDate));
@@ -1910,12 +1990,12 @@ public class DocumentImpl
             String path = current.getNodeName() + children;
             
             if ( !children.equals("") ) {
-                logMetacat.debug("DocumentImpl.traverseParents - B: " + path +"\n");
+                logMetacat.trace("DocumentImpl.traverseParents - B: " + path +"\n");
                 pathList.put(path, new PathIndexEntry(leafNodeId, path, docid,
                     doctype, parentId));
 				if (pathsForIndexing.contains(path)
 						&& leafData.trim().length() != 0) {
-					logMetacat.debug("DocumentImpl.traverseParents - paths found for indexing: " + currentName);
+					logMetacat.trace("DocumentImpl.traverseParents - paths found for indexing: " + currentName);
 					pathsFoundForIndexing.put(path, new PathIndexEntry(leafNodeId,
 							path, docid, leafParentId, leafData, leafDataNumerical, leafDataDate));
 				}
@@ -1926,13 +2006,13 @@ public class DocumentImpl
                 if ( !path.equals("") ) {
                   fullPath = '/' + path;
                 }
-                logMetacat.debug("DocumentImpl.traverseParents - C: " + fullPath +"\n");
+                logMetacat.trace("DocumentImpl.traverseParents - C: " + fullPath +"\n");
                 pathList.put(fullPath, new PathIndexEntry(leafNodeId, fullPath,
                     docid, doctype, parentId));
 
 				if (pathsForIndexing.contains(fullPath)
 						&& leafData.trim().length() != 0) {
-					logMetacat.debug("DocumentImpl.traverseParents - paths found for indexing: " + currentName);
+					logMetacat.trace("DocumentImpl.traverseParents - paths found for indexing: " + currentName);
 					pathsFoundForIndexing.put(fullPath, new PathIndexEntry(
 							leafNodeId, fullPath, docid, leafParentId, leafData,
 							leafDataNumerical, leafDataDate));
@@ -2257,7 +2337,7 @@ public class DocumentImpl
 
             }
             pstmt.close();
-            if (this.doctype != null) {
+            if (this.doctype != null && !XMLSchemaService.getInstance().getNonXMLMetadataFormatList().contains(doctype)) {
                 pstmt = dbconn.prepareStatement("SELECT system_id, entry_type "
                         + "FROM xml_catalog " + "WHERE public_id = ?");
                 //should increase usage count again
@@ -2640,7 +2720,7 @@ public class DocumentImpl
 
     public static String write(DBConnection conn, String xmlString, String pub,
             Reader dtd, String action, String docid, String user,
-            String[] groups, String ruleBase, boolean needValidation, boolean writeAccessRules)
+            String[] groups, String ruleBase, boolean needValidation, boolean writeAccessRules, byte[] xmlBytes, String schemaLocation, Checksum checksum, File objectFile)
             throws Exception
     {
         //this method will be called in handleUpdateOrInsert method
@@ -2648,7 +2728,7 @@ public class DocumentImpl
         // get server location for this doc
         int serverLocation = getServerLocationNumber(docid);
         return write(conn, xmlString, pub, dtd, action, docid, user, groups,
-                serverLocation, false, ruleBase, needValidation, writeAccessRules);
+                serverLocation, false, ruleBase, needValidation, writeAccessRules, xmlBytes, schemaLocation, checksum, objectFile);
     }
 
     /**
@@ -2685,13 +2765,25 @@ public class DocumentImpl
     public static String write(DBConnection conn, String xmlString, String pub,
             Reader dtd, String action, String accnum, String user,
             String[] groups, int serverCode, boolean override, String ruleBase,
-            boolean needValidation, boolean writeAccessRules) throws Exception
+            boolean needValidation, boolean writeAccessRules, byte[] xmlBytes, String schemaLocation, Checksum checksum, File objectFile) throws Exception
     {
         // NEW - WHEN CLIENT ALWAYS PROVIDE ACCESSION NUMBER INCLUDING REV IN IT
     	
     	// Get the xml as a string so we can write to file later
     	StringReader xmlReader = new StringReader(xmlString);
-    	
+    	// detect encoding
+        XmlStreamReader xsr = null;
+        if(xmlBytes == null || xmlBytes.length == 0 ) {
+            xsr = new XmlStreamReader(new ByteArrayInputStream(xmlString.getBytes()));
+        } else {
+            xsr = new XmlStreamReader(new ByteArrayInputStream(xmlBytes));
+        }         
+        String encoding = xsr.getEncoding();
+        //get the byte array from xmlString if the xmlbyte is null (this comes from metacat api)
+        if(xmlBytes == null || xmlBytes.length == 0) {
+            xmlBytes = xmlString.getBytes(encoding);
+        }
+
         logMetacat.debug("DocumentImpl.write - conn usage count before writing: "
                 + conn.getUsageCount());
         AccessionNumber ac = new AccessionNumber(accnum, action);
@@ -2750,10 +2842,9 @@ public class DocumentImpl
                 	logReplication.info("lock granted for " + accnum
                             + " from " + server);
                 	
-                	// detect encoding
-                    XmlStreamReader xsr = new XmlStreamReader(new ByteArrayInputStream(xmlString.getBytes()));
-			        String encoding = xsr.getEncoding();
-			        
+                	
+			        Vector<String>guidsToSync = new Vector<String>();
+
                     /*
                      * XMLReader parser = initializeParser(conn, action, docid,
                      * updaterev, validate, user, groups, pub, serverCode, dtd);
@@ -2761,25 +2852,40 @@ public class DocumentImpl
                     logMetacat.debug("DocumentImpl.write - initializing parser");
                     parser = initializeParser(conn, action, docid, xmlReader, updaterev,
                             user, groups, pub, serverCode, dtd, ruleBase,
-                            needValidation, false, null, null, encoding, writeAccessRules);
+                            needValidation, false, null, null, encoding, writeAccessRules, guidsToSync, schemaLocation);
                     	// false means it is not a revision doc
                                    //null, null are createdate and updatedate
                                    //null will use current time as create date time
                     conn.setAutoCommit(false);
                     logMetacat.debug("DocumentImpl.write - parsing xml");
                     parser.parse(new InputSource(xmlReader));
-                    conn.commit();
-                    conn.setAutoCommit(true);
                     
                     // update the node data to include numeric and date values
                     updateNodeValues(conn, docid);
                     
                     //write the file to disk
                     logMetacat.debug("DocumentImpl.write - Writing xml to file system");                    
-                	writeToFileSystem(xmlString, accnum, encoding);
+                	writeToFileSystem(xmlBytes, accnum, checksum, objectFile);
+                	
+                	conn.commit();
+                    conn.setAutoCommit(true);
 
                     // write to xml_node complete. start the indexing thread.
                     addDocidToIndexingQueue(docid, rev);
+                    
+			        // The EML parser has already written to systemmetadata and then writes to xml_access when the db transaction
+                    // is committed. If the pids that have been updated are for data objects with their own access rules, we
+			        // must inform the CN to sync it's access rules with the MN, so the EML 2.1 parser collected such pids from the parse
+			        // operation.
+            		if (guidsToSync.size() > 0) {
+            			try {
+            				SyncAccessPolicy syncAP = new SyncAccessPolicy();
+            				syncAP.sync(guidsToSync);
+            			} catch (Exception e) {
+            				logMetacat.error("Error syncing pids with CN: " + " Exception " + e.getMessage());
+            				e.printStackTrace(System.out);
+            			}
+            		}
                } catch (Exception e) {
                    e.printStackTrace();
             	   logMetacat.error("DocumentImpl.write - Problem with parsing: " + e.getMessage());
@@ -2846,30 +2952,39 @@ public class DocumentImpl
         }
         XMLReader parser = null;
         try {
-            // detect encoding
-        	XmlStreamReader xsr = new XmlStreamReader(new ByteArrayInputStream(xmlString.getBytes()));
-	        String encoding = xsr.getEncoding();
+            
 	        
+	        Vector<String>guidsToSync = new Vector<String>();
+
             parser = initializeParser(conn, action, docid, xmlReader, rev, user, groups,
-                    pub, serverCode, dtd, ruleBase, needValidation, false, null, null, encoding, writeAccessRules);
+                    pub, serverCode, dtd, ruleBase, needValidation, false, null, null, encoding, writeAccessRules, guidsToSync, schemaLocation);
                     // null and null are createtime and updatetime
                     // null will create current time
                     //false means it is not a revision doc
 
             conn.setAutoCommit(false);
-            logMetacat.debug("DocumentImpl.write - XML to be parsed: " + xmlString);
+            //logMetacat.debug("DocumentImpl.write - XML to be parsed: " + xmlString);
             parser.parse(new InputSource(xmlReader));
 
-            conn.commit();
-            conn.setAutoCommit(true);
-            
             //update nodes
             updateNodeValues(conn, docid);
             
             //write the file to disk
-        	writeToFileSystem(xmlString, accnum, encoding);
+        	writeToFileSystem(xmlBytes, accnum, checksum, objectFile);
+        	
+        	 conn.commit();
+             conn.setAutoCommit(true);
 
             addDocidToIndexingQueue(docid, rev);
+    		if (guidsToSync.size() > 0) {
+    			try {
+    				SyncAccessPolicy syncAP = new SyncAccessPolicy();
+    				syncAP.sync(guidsToSync);
+    			} catch (Exception e) {
+    				logMetacat.error("Error syncing pids with CN: " + " Exception " + e.getMessage());
+    				e.printStackTrace(System.out);
+    			}
+    		}
         } catch (Exception e) {
         	logMetacat.error("DocumentImpl.write - Problem with parsing: " + e.getMessage());
             e.printStackTrace();
@@ -2982,11 +3097,11 @@ public class DocumentImpl
      *            the server which notify local server the force replication
      *            command
      */
-    public static String writeReplication(DBConnection conn, String xmlString,
+    public static String writeReplication(DBConnection conn, String xmlString, byte[] xmlBytes,
             String pub, Reader dtd, String action, String accnum, String user,
             String[] groups, String homeServer, String notifyServer,
             String ruleBase, boolean needValidation, String tableName, 
-            boolean timedReplication, Date createDate, Date updateDate) throws Exception
+            boolean timedReplication, Date createDate, Date updateDate, String schemaLocation) throws Exception
     {
     	// Get the xml as a string so we can write to file later
     	StringReader xmlReader = new StringReader(xmlString);
@@ -3044,15 +3159,17 @@ public class DocumentImpl
                 isRevision = true;
             }
             // detect encoding
-            XmlStreamReader xsr = new XmlStreamReader(new ByteArrayInputStream(xmlString.getBytes()));
+            //XmlStreamReader xsr = new XmlStreamReader(new ByteArrayInputStream(xmlString.getBytes()));
+            XmlStreamReader xsr = new XmlStreamReader(new ByteArrayInputStream(xmlBytes));
 	        String encoding = xsr.getEncoding();
 	        
 	        // no need to write the EML-contained access rules for replication
 	        boolean writeAccessRules = false;
-	       
+	        Vector<String>guidsToSync = new Vector<String>();
+
             parser = initializeParser(conn, action, docid, xmlReader, rev, user, groups,
                     pub, serverCode, dtd, ruleBase, needValidation, 
-                    isRevision, createDate, updateDate, encoding, writeAccessRules);
+                    isRevision, createDate, updateDate, encoding, writeAccessRules, guidsToSync, schemaLocation);
          
             conn.setAutoCommit(false);
             parser.parse(new InputSource(xmlReader));
@@ -3060,7 +3177,10 @@ public class DocumentImpl
             conn.setAutoCommit(true);
             
             // Write the file to disk
-        	writeToFileSystem(xmlString, accnum, encoding);
+            //byte[] bytes = xmlString.getBytes(encoding);
+            Checksum checksum = null;
+            File objectFile = null;
+            writeToFileSystem(xmlBytes, accnum, checksum, objectFile);
             
             // write to xml_node complete. start the indexing thread.
             // this only for xml_documents
@@ -3269,14 +3389,44 @@ public class DocumentImpl
         return documentType;
     }
 
+    
     /**
-     * Delete an XML file from the database (actually, just make it a revision
-     * in the xml_revisions table)
-     *
-     * @param docid
-     *            the ID of the document to be deleted from the database
+     * Archive an object from the xml_documents table to the xml_revision table (including other changes as well).
+     * Or delete an object totally from the db. The parameter "removeAll" decides which action will be taken.
+     * @param accnum  the local id (including the rev) will be applied.
+     * @param user  the subject who does the action.
+     * @param groups  the groups which the user belongs to.
+     * @param notifyServer  the server will be notified in the replication. It can be null.
+     * @param removeAll  it will be the delete action if this is true; otherwise it will be the archive action
+     * @throws SQLException
+     * @throws InsufficientKarmaException
+     * @throws McdbDocNotFoundException
+     * @throws Exception
      */
     public static void delete(String accnum, String user, 
+            String[] groups, String notifyServer, boolean removeAll)
+            throws SQLException, InsufficientKarmaException, McdbDocNotFoundException,
+            Exception {
+        //default, we only match the docid part on archive action
+        boolean ignoreRev = true;
+        delete(accnum, ignoreRev, user, groups, notifyServer, removeAll);
+     }
+    
+    /**
+     * Archive an object from the xml_documents table to the xml_revision table (including other changes as well).
+     * Or delete an object totally from the db. The parameter "removeAll" decides which action will be taken.
+     * @param accnum  the local id (including the rev) will be applied.
+     * @param ignoreRev  if the archive action should only match docid and ignore the rev 
+     * @param user  the subject who does the action.
+     * @param groups  the groups which the user belongs to.
+     * @param notifyServer  the server will be notified in the replication. It can be null.
+     * @param removeAll  it will be the delete action if this is true; otherwise it will be the archive action.
+     * @throws SQLException
+     * @throws InsufficientKarmaException
+     * @throws McdbDocNotFoundException
+     * @throws Exception
+     */
+    public static void delete(String accnum, boolean ignoreRev, String user, 
       String[] groups, String notifyServer, boolean removeAll)
       throws SQLException, InsufficientKarmaException, McdbDocNotFoundException,
       Exception
@@ -3286,6 +3436,7 @@ public class DocumentImpl
         int serialNumber = -1;
         PreparedStatement pstmt = null;
         boolean isXML   = true;
+        boolean inRevisionTable = false;
         try {
             //check out DBConnection
             conn = DBConnectionPool.getDBConnection("DocumentImpl.delete");
@@ -3297,25 +3448,86 @@ public class DocumentImpl
             int rev = DocumentUtil.getRevisionFromAccessionNumber(accnum);;
 
             // Check if the document exists.
-            pstmt = conn.prepareStatement("SELECT * FROM xml_documents WHERE docid = ?");
-            pstmt.setString(1, docid);
-            logMetacat.debug("DocumentImpl.delete - executing SQL: " + pstmt.toString());
-            pstmt.execute();
-            ResultSet rs = pstmt.getResultSet();
-            if(!rs.next()){
-                rs.close();
-                pstmt.close();
-                conn.increaseUsageCount(1);
-                throw new McdbDocNotFoundException("Docid " + accnum  + 
-                  " does not exist. Please check that you have also " +
-                  "specified the revision number of the document.");
-            }
-            rs.close();
-            pstmt.close();
-            conn.increaseUsageCount(1);
+            if(!removeAll) {
+            	//this only archives a document from xml_documents to xml_revisions (also archive the xml_nodes table as well)
+            	 logMetacat.info("DocumentImp.delete - archive the document "+accnum);
+            	 pstmt = conn.prepareStatement("SELECT rev, docid FROM xml_documents WHERE docid = ?");
+            	 pstmt.setString(1, docid);
+                 logMetacat.debug("DocumentImpl.delete - executing SQL: " + pstmt.toString());
+                 pstmt.execute();
+                 ResultSet rs = pstmt.getResultSet();
+                 if(!rs.next()){
+                	 rs.close();
+                     pstmt.close();
+                     conn.increaseUsageCount(1);                 	
+                     throw new McdbDocNotFoundException("Docid " + accnum  + 
+                           " does not exist. Please check that you have also " +
+                           "specified the revision number of the document.");
+                 } else {
+                	//Get the rev from the xml_table. If the value is greater than the one user specified, we will use this one.
+                	 //In ReplicationHandler.handleDeleteSingleDocument method, the code use "1" as the revision number not matther what is the actual value
+                	 int revFromTable = rs.getInt(1);
+                	 if(!ignoreRev && revFromTable != rev) {
+                	     pstmt.close();
+                         conn.increaseUsageCount(1);                    
+                         throw new McdbDocNotFoundException("Docid " + accnum  + 
+                               " does not exist. Please check that you have also " +
+                               "specified the revision number of the document.");
+                	 }
+                	 if(revFromTable > rev) {
+                		 logMetacat.info("DocumentImpl.delete - in the archive the user specified rev - "+rev +"is less than the version in xml_document table - "+revFromTable+
+                				 ". We will use the one from table.");
+                		 rev = revFromTable;             		 
+                	 }
+                	 rs.close();
+                     pstmt.close();
+                     conn.increaseUsageCount(1);
+                	 
+                 }
+            } else {          	
+            	logMetacat.info("DocumentImp.delete - complete delete the document "+accnum);
+           	 	pstmt = conn.prepareStatement("SELECT * FROM xml_documents WHERE docid = ? and rev = ?");
+           	 	pstmt.setString(1, docid);
+           	 	pstmt.setInt(2, rev);
+                logMetacat.debug("DocumentImpl.delete - executing SQL: " + pstmt.toString());
+                pstmt.execute();
+                ResultSet rs = pstmt.getResultSet();
+                if(!rs.next()){
+                	//look at the xml_revisions table
+            		logMetacat.debug("DocumentImpl.delete - look at the docid "+ accnum+" in the xml_revision table");
+            		 pstmt = conn.prepareStatement("SELECT * FROM xml_revisions WHERE docid = ? AND rev = ?");
+                     pstmt.setString(1, docid);
+                     pstmt.setInt(2, rev);
+                     logMetacat.debug("DocumentImpl.delete - executing SQL: " + pstmt.toString());
+                     pstmt.execute();
+                     rs = pstmt.getResultSet();
+                     if(!rs.next()) {
+                    	 rs.close();
+                         pstmt.close();
+                         conn.increaseUsageCount(1);
+                         throw new McdbDocNotFoundException("Docid " + accnum  + 
+                               " does not exist. Please check and try to delete it again.");
+                     } else {
+                    	 rs.close();
+                         pstmt.close();
+                         conn.increaseUsageCount(1);
+                    	 inRevisionTable=true;
+                     }
+                } else {
+                	 rs.close();
+                     pstmt.close();
+                     conn.increaseUsageCount(1);               	
+                }
+            }     
 
             // get the type of deleting docid, this will be used in forcereplication
-            String type = getDocTypeFromDB(conn, docid);
+            String type = null;
+            if(!inRevisionTable) {
+            	type = getDocTypeFromDB(conn, "xml_documents", docid);
+            } else {
+            	type = getDocTypeFromDB(conn, "xml_revisions", docid);
+            }
+            logMetacat.info("DocumentImpl.delete - the deleting doc type is " + type+ "...");
             if (type != null && type.trim().equals("BIN")) {
             	isXML = false;
             }
@@ -3333,119 +3545,141 @@ public class DocumentImpl
             }
 
             conn.setAutoCommit(false);
-            
-            // Copy the record to the xml_revisions table if not a full delete
-            if (!removeAll) {
-            	DocumentImpl.archiveDocAndNodesRevision(conn, docid, user, null);
-                logMetacat.info("DocumentImpl.delete - calling archiveDocAndNodesRevision");
-
-            }
-            double afterArchiveDocAndNode = System.currentTimeMillis()/1000;
-            logMetacat.info("DocumentImpl.delete - The time for archiveDocAndNodesRevision is "+(afterArchiveDocAndNode - start));
-            
             // make sure we don't have a pending index task
             removeDocidFromIndexingQueue(docid, String.valueOf(rev));
-            
-            // Now delete it from the xml_index table
-            pstmt = conn.prepareStatement("DELETE FROM xml_index WHERE docid = ?");
-            pstmt.setString(1, docid);
-            logMetacat.debug("DocumentImpl.delete - executing SQL: " + pstmt.toString());
-            pstmt.execute();
-            pstmt.close();
-            conn.increaseUsageCount(1);
-            
-            double afterDeleteIndex = System.currentTimeMillis()/1000;
-            logMetacat.info("DocumentImpl.delete - The deleting xml_index time is "+(afterDeleteIndex - afterArchiveDocAndNode ));
-            
-            // Now delete it from xml_access table
-            /*************** DO NOT DELETE ACCESS - need to archive this ******************/
-            double afterDeleteXmlAccess2 = System.currentTimeMillis()/1000;
-            /******* END DELETE ACCESS *************/            
-            
-            // Delete enteries from xml_queryresult
-            try {
-                XMLQueryresultAccess xmlQueryresultAccess = new XMLQueryresultAccess();
-                xmlQueryresultAccess.deleteXMLQueryresulForDoc(docid);
-            } catch (AccessException ae) {
-            	throw new SQLException("Problem deleting xml query result for docid " + 
-            			docid + " : " + ae.getMessage());
+            if(!inRevisionTable) {
+            	   // Copy the record to the xml_revisions table if not a full delete
+                if (!removeAll) {
+                	DocumentImpl.archiveDocAndNodesRevision(conn, docid, user, null);
+                    logMetacat.info("DocumentImpl.delete - calling archiveDocAndNodesRevision");
+
+                }
+                double afterArchiveDocAndNode = System.currentTimeMillis()/1000;
+                logMetacat.info("DocumentImpl.delete - The time for archiveDocAndNodesRevision is "+(afterArchiveDocAndNode - start));
+                       
+                // Now delete it from the xml_index table
+                pstmt = conn.prepareStatement("DELETE FROM xml_index WHERE docid = ?");
+                pstmt.setString(1, docid);
+                logMetacat.debug("DocumentImpl.delete - executing SQL: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                conn.increaseUsageCount(1);
+                
+                double afterDeleteIndex = System.currentTimeMillis()/1000;
+                logMetacat.info("DocumentImpl.delete - The deleting xml_index time is "+(afterDeleteIndex - afterArchiveDocAndNode ));
+                
+                // Now delete it from xml_access table
+                /*************** DO NOT DELETE ACCESS - need to archive this ******************/
+                double afterDeleteXmlAccess2 = System.currentTimeMillis()/1000;
+                /******* END DELETE ACCESS *************/            
+                
+                // Delete enteries from xml_queryresult
+                try {
+                    XMLQueryresultAccess xmlQueryresultAccess = new XMLQueryresultAccess();
+                    xmlQueryresultAccess.deleteXMLQueryresulForDoc(docid);
+                } catch (AccessException ae) {
+                	throw new SQLException("Problem deleting xml query result for docid " + 
+                			docid + " : " + ae.getMessage());
+                }
+                double afterDeleteQueryResult = System.currentTimeMillis()/1000;
+                logMetacat.info("DocumentImpl.delete - The deleting xml_queryresult time is "+(afterDeleteQueryResult - afterDeleteXmlAccess2));
+                // Delete it from relation table
+                pstmt = conn.prepareStatement("DELETE FROM xml_relation WHERE docid = ?");
+                //increase usage count
+                pstmt.setString(1, docid);
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                conn.increaseUsageCount(1);
+                double afterXMLRelation = System.currentTimeMillis()/1000;
+                logMetacat.info("DocumentImpl.delete - The deleting time  relation is "+ (afterXMLRelation - afterDeleteQueryResult) );
+
+                // Delete it from xml_path_index table
+                logMetacat.info("DocumentImpl.delete - deleting from xml_path_index");
+                pstmt = conn.prepareStatement("DELETE FROM xml_path_index WHERE docid = ?");
+                //increase usage count
+                pstmt.setString(1, docid);
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                conn.increaseUsageCount(1);
+
+                logMetacat.info("DocumentImpl.delete - deleting from xml_accesssubtree");
+                // Delete it from xml_accesssubtree table
+                pstmt = conn.prepareStatement("DELETE FROM xml_accesssubtree WHERE docid = ?");
+                //increase usage count
+                pstmt.setString(1, docid);
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                conn.increaseUsageCount(1);
+
+                // Delete it from xml_documents table
+                logMetacat.info("DocumentImpl.delete - deleting from xml_documents");
+                pstmt = conn.prepareStatement("DELETE FROM xml_documents WHERE docid = ?");
+                pstmt.setString(1, docid);
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                //Usaga count increase 1
+                conn.increaseUsageCount(1);
+                double afterDeleteDoc = System.currentTimeMillis()/1000;
+                logMetacat.info("DocumentImpl.delete - the time to delete  xml_path_index,  xml_accesssubtree, xml_documents time is "+ 
+                		(afterDeleteDoc - afterXMLRelation ));
+                // Delete the old nodes in xml_nodes table...
+                pstmt = conn.prepareStatement("DELETE FROM xml_nodes WHERE docid = ?");
+
+                // Increase dbconnection usage count
+                conn.increaseUsageCount(1);
+                // Bind the values to the query and execute it
+                pstmt.setString(1, docid);
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+
+                double afterDeleteXMLNodes = System.currentTimeMillis()/1000;
+                logMetacat.info("DocumentImpl.delete - Deleting xml_nodes time is "+(afterDeleteXMLNodes-afterDeleteDoc));
+            } else {
+            	long rootnodeid = getRevisionRootNodeId(conn, docid, rev);
+            	logMetacat.info("DocumentImpl.delete - deleting from xml_revisions");
+                pstmt = conn.prepareStatement("DELETE FROM xml_revisions WHERE docid = ? AND rev = ?");
+                pstmt.setString(1, docid);
+                pstmt.setInt(2, rev);
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                conn.increaseUsageCount(1);
+                
+                logMetacat.info("DocumentImpl.delete - deleting from xml_nodes_revisions");
+                pstmt = conn.prepareStatement("DELETE FROM xml_nodes_revisions WHERE rootnodeid = ?");
+                pstmt.setLong(1, rootnodeid);
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                conn.increaseUsageCount(1);
             }
-            double afterDeleteQueryResult = System.currentTimeMillis()/1000;
-            logMetacat.info("DocumentImpl.delete - The deleting xml_queryresult time is "+(afterDeleteQueryResult - afterDeleteXmlAccess2));
-            // Delete it from relation table
-            pstmt = conn.prepareStatement("DELETE FROM xml_relation WHERE docid = ?");
-            //increase usage count
-            pstmt.setString(1, docid);
-            logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
-            pstmt.execute();
-            pstmt.close();
-            conn.increaseUsageCount(1);
-            double afterXMLRelation = System.currentTimeMillis()/1000;
-            logMetacat.info("DocumentImpl.delete - The deleting time  relation is "+ (afterXMLRelation - afterDeleteQueryResult) );
-
-            // Delete it from xml_path_index table
-            logMetacat.info("DocumentImpl.delete - deleting from xml_path_index");
-            pstmt = conn.prepareStatement("DELETE FROM xml_path_index WHERE docid = ?");
-            //increase usage count
-            pstmt.setString(1, docid);
-            logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
-            pstmt.execute();
-            pstmt.close();
-            conn.increaseUsageCount(1);
-
-            logMetacat.info("DocumentImpl.delete - deleting from xml_accesssubtree");
-            // Delete it from xml_accesssubtree table
-            pstmt = conn.prepareStatement("DELETE FROM xml_accesssubtree WHERE docid = ?");
-            //increase usage count
-            pstmt.setString(1, docid);
-            logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
-            pstmt.execute();
-            pstmt.close();
-            conn.increaseUsageCount(1);
-
-            // Delete it from xml_documents table
-            logMetacat.info("DocumentImpl.delete - deleting from xml_documents");
-            pstmt = conn.prepareStatement("DELETE FROM xml_documents WHERE docid = ?");
-            pstmt.setString(1, docid);
-            logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
-            pstmt.execute();
-            pstmt.close();
-            //Usaga count increase 1
-            conn.increaseUsageCount(1);
-            double afterDeleteDoc = System.currentTimeMillis()/1000;
-            logMetacat.info("DocumentImpl.delete - the time to delete  xml_path_index,  xml_accesssubtree, xml_documents time is "+ 
-            		(afterDeleteDoc - afterXMLRelation ));
-            // Delete the old nodes in xml_nodes table...
-            pstmt = conn.prepareStatement("DELETE FROM xml_nodes WHERE docid = ?");
-
-            // Increase dbconnection usage count
-            conn.increaseUsageCount(1);
-            // Bind the values to the query and execute it
-            pstmt.setString(1, docid);
-            logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
-            pstmt.execute();
-            pstmt.close();
-
-            double afterDeleteXMLNodes = System.currentTimeMillis()/1000;
-            logMetacat.info("DocumentImpl.delete - Deleting xml_nodes time is "+(afterDeleteXMLNodes-afterDeleteDoc));
             
-            // remove the file if called for
-            if (removeAll) {
-            	deleteFromFileSystem(accnum, isXML);
-            }
-            
-            // set as archived in the systemMetadata 
+                
+            // set as archived in the systemMetadata  if it is not a complete removal
             String pid = IdentifierManager.getInstance().getGUID(docid, rev);
             Identifier guid = new Identifier();
-        	guid.setValue(pid);
-            SystemMetadata sysMeta = HazelcastService.getInstance().getSystemMetadataMap().get(guid);
-            if (sysMeta != null) {
-            	sysMeta.setArchived(true);
-            	sysMeta.setDateSysMetadataModified(Calendar.getInstance().getTime());
-				HazelcastService.getInstance().getSystemMetadataMap().put(guid, sysMeta);
-				// submit for indexing
-                HazelcastService.getInstance().getIndexQueue().add(sysMeta);
-            }
+        	guid.setValue(pid);          
+            
+            //removal the access rules for removeAll.
+        	//This code is removed to HazelcastService.getInstance().getIdentifiers().remove(guid);
+            /*if(removeAll) {
+            	
+                logMetacat.info("DocumentImpl.delete - deleting from xml_access");
+                pstmt = conn.prepareStatement("DELETE FROM xml_access WHERE guid = ?");
+                pstmt.setString(1, guid.getValue());
+                logMetacat.debug("DocumentImpl.delete - running sql: " + pstmt.toString());
+                pstmt.execute();
+                pstmt.close();
+                //Usaga count increase 1
+                conn.increaseUsageCount(1);             
+            	
+            }*/
+            
             
             // clear cache after inserting or updating a document
             if (PropertyService.getProperty("database.queryCacheOn").equals("true")) {
@@ -3453,9 +3687,40 @@ public class DocumentImpl
             	DBQuery.clearQueryResultCache();
             }
             
+            //update systemmetadata table and solr index
+            SystemMetadata sysMeta = HazelcastService.getInstance().getSystemMetadataMap().get(guid);
+            if (sysMeta != null) {
+    				sysMeta.setSerialVersion(sysMeta.getSerialVersion().add(BigInteger.ONE));
+    				sysMeta.setArchived(true);
+                	sysMeta.setDateSysMetadataModified(Calendar.getInstance().getTime());
+                	if(!removeAll) {
+                		HazelcastService.getInstance().getSystemMetadataMap().put(guid, sysMeta);
+                		MetacatSolrIndex.getInstance().submit(guid, sysMeta, null, false);
+                	} else { 
+                		try {
+                			logMetacat.debug("the system metadata contains the key - guid "+guid.getValue()+" before removing is "+HazelcastService.getInstance().getSystemMetadataMap().containsKey(guid));
+                			HazelcastService.getInstance().getSystemMetadataMap().remove(guid);
+                			logMetacat.debug("the system metadata contains the guid "+guid.getValue()+" after removing is "+HazelcastService.getInstance().getSystemMetadataMap().containsKey(guid));
+                			MetacatSolrIndex.getInstance().submitDeleteTask(guid, sysMeta);
+                		} catch (RuntimeException ee) {
+                			logMetacat.warn("we catch the run time exception in deleting system metadata "+ee.getMessage());
+                			throw new Exception("DocumentImpl.delete -"+ee.getMessage());
+                		}	
+                	}              	
+                    
+            }
+            
             // only commit if all of this was successful
             conn.commit();
             conn.setAutoCommit(true);
+            
+            // remove the file if called for
+            if (removeAll) {
+            	logMetacat.debug("the identifier set contains "+guid.getValue()+" is "+HazelcastService.getInstance().getIdentifiers().contains(guid));
+            	HazelcastService.getInstance().getIdentifiers().remove(guid);
+            	logMetacat.debug("the identifier set contains "+guid.getValue()+" after removing is "+HazelcastService.getInstance().getIdentifiers().contains(guid));
+            	deleteFromFileSystem(accnum, isXML);
+            }
                         
             // add force delete replcation document here.
             String deleteAction = ReplicationService.FORCEREPLICATEDELETE;
@@ -3491,11 +3756,11 @@ public class DocumentImpl
 
     }
 
-    private static String getDocTypeFromDB(DBConnection conn, String docidWithoutRev)
+    private static String getDocTypeFromDB(DBConnection conn, String tableName, String docidWithoutRev)
                                  throws SQLException
     {
       String type = null;
-      String sql = "SELECT DOCTYPE FROM xml_documents WHERE docid LIKE ?";
+      String sql = "SELECT DOCTYPE FROM "+tableName+" WHERE docid LIKE ?";
       PreparedStatement stmt = null;
       stmt = conn.prepareStatement(sql);
       stmt.setString(1, docidWithoutRev);
@@ -3514,7 +3779,7 @@ public class DocumentImpl
      * Check for "WRITE" permission on @docid for @user and/or @groups
      * from DB connection
      */
-    private static boolean hasWritePermission(String user, String[] groups,
+    public static boolean hasWritePermission(String user, String[] groups,
             String docid) throws SQLException, Exception
     {
         // Check for WRITE permission on @docid for @user and/or @groups
@@ -3540,16 +3805,19 @@ public class DocumentImpl
     }
 
     /**
-     * Check for "WRITE" permission on @docid for @user and/or @groups
+     * Check for "ALL" or "CHMOD" permission on @docid for @user and/or @groups
      * from DB connection
      */
-    private static boolean hasAllPermission(String user, String[] groups,
+    public static boolean hasAllPermission(String user, String[] groups,
             String docid) throws SQLException, Exception
     {
-        // Check for WRITE permission on @docid for @user and/or @groups
+        // Check for either ALL or CHMOD permission on @docid for @user and/or @groups
         PermissionController controller = new PermissionController(docid);
-        return controller.hasPermission(user, groups,
+        boolean hasAll = controller.hasPermission(user, groups,
                 AccessControlInterface.ALLSTRING);
+        boolean hasChmod = controller.hasPermission(user, groups,
+                AccessControlInterface.CHMODSTRING);
+        return hasAll || hasChmod;
     }
 
     /**
@@ -3560,7 +3828,7 @@ public class DocumentImpl
             String action, String docid, Reader xml, String rev, String user,
             String[] groups, String pub, int serverCode, Reader dtd,
             String ruleBase, boolean needValidation, boolean isRevision,
-            Date createDate, Date updateDate, String encoding, boolean writeAccessRules) throws Exception
+            Date createDate, Date updateDate, String encoding, boolean writeAccessRules, Vector<String> guidsToSync, String schemaLocation) throws Exception
     {
         XMLReader parser = null;
         try {
@@ -3571,38 +3839,40 @@ public class DocumentImpl
             // Get an instance of the parser
             String parserName = PropertyService.getProperty("xml.saxparser");
             parser = XMLReaderFactory.createXMLReader(parserName);
-            XMLSchemaService.getInstance().populateRegisteredSchemaList();
+            //XMLSchemaService.getInstance().populateRegisteredSchemaList();
             if (ruleBase != null && ruleBase.equals(EML200)) {
                 logMetacat.info("DocumentImpl.initalizeParser - Using eml 2.0.0 parser");
                 chandler = new Eml200SAXHandler(dbconn, action, docid, rev,
-                        user, groups, pub, serverCode, createDate, updateDate, writeAccessRules);
+                        user, groups, pub, serverCode, createDate, updateDate, writeAccessRules, guidsToSync);
                 chandler.setIsRevisionDoc(isRevision);
                 chandler.setEncoding(encoding);
                 parser.setContentHandler((ContentHandler) chandler);
                 parser.setErrorHandler((ErrorHandler) chandler);
                 parser.setProperty(DECLARATIONHANDLERPROPERTY, chandler);
                 parser.setProperty(LEXICALPROPERTY, chandler);
-                // turn on schema validation feature
-                parser.setFeature(VALIDATIONFEATURE, true);
                 parser.setFeature(NAMESPACEFEATURE, true);
-                //parser.setFeature(NAMESPACEPREFIXESFEATURE, true);
-                parser.setFeature(SCHEMAVALIDATIONFEATURE, true);
-                // From DB to find the register external schema location
-                String externalSchemaLocation = null;
-//                SchemaLocationResolver resolver = new SchemaLocationResolver();
-                externalSchemaLocation = XMLSchemaService.getInstance().getNameSpaceAndLocationString();
-                logMetacat.debug("DocumentImpl.initalizeParser - 2.0.0 external schema location: " + externalSchemaLocation);
-                // Set external schemalocation.
-                if (externalSchemaLocation != null
-                        && !(externalSchemaLocation.trim()).equals("")) {
-                    parser.setProperty(EXTERNALSCHEMALOCATIONPROPERTY,
-                            externalSchemaLocation);
+                if(needValidation) {
+                    logMetacat.info("DocumentImpl.initalizeParser - 2.0.0 parser sets up validation feature since the parameter of the needValidataion is "+needValidation);
+                    // turn on schema validation feature
+                    parser.setFeature(VALIDATIONFEATURE, true);
+                    //parser.setFeature(NAMESPACEPREFIXESFEATURE, true);
+                    parser.setFeature(SCHEMAVALIDATIONFEATURE, true);
+                    logMetacat.info("DocumentImpl.initalizeParser - 2.0.0 external schema location: " + schemaLocation);
+                    // Set external schemalocation.
+                    if (schemaLocation != null
+                            && !(schemaLocation.trim()).equals("")) {
+                        parser.setProperty(EXTERNALSCHEMALOCATIONPROPERTY,
+                                schemaLocation);
+                    } else {
+                        throw new Exception ("The schema for the namespace on docid "+docid+" can't be found in any place. So we can't validate the xml instance.");
+                    }
                 }
-                logMetacat.debug("DocumentImpl.initalizeParser - 2.0.0 parser configured");
+                
+                logMetacat.info("DocumentImpl.initalizeParser - 2.0.0 parser configured");
             } else if (ruleBase != null && ruleBase.equals(EML210)) {
                 logMetacat.info("DocumentImpl.initalizeParser - Using eml 2.1.0 parser");
                 chandler = new Eml210SAXHandler(dbconn, action, docid, rev,
-                        user, groups, pub, serverCode, createDate, updateDate, writeAccessRules);
+                        user, groups, pub, serverCode, createDate, updateDate, writeAccessRules, guidsToSync);
                 chandler.setIsRevisionDoc(isRevision);
                 chandler.setEncoding(encoding);
                 parser.setContentHandler((ContentHandler) chandler);
@@ -3610,19 +3880,21 @@ public class DocumentImpl
                 parser.setProperty(DECLARATIONHANDLERPROPERTY, chandler);
                 parser.setProperty(LEXICALPROPERTY, chandler);
                 // turn on schema validation feature
-                parser.setFeature(VALIDATIONFEATURE, true);
                 parser.setFeature(NAMESPACEFEATURE, true);
-                //parser.setFeature(NAMESPACEPREFIXESFEATURE, true);
-                parser.setFeature(SCHEMAVALIDATIONFEATURE, true);
-                // From DB to find the register external schema location
-                String externalSchemaLocation = null;
-                externalSchemaLocation = XMLSchemaService.getInstance().getNameSpaceAndLocationString();
-                logMetacat.debug("DocumentImpl.initalizeParser - 2.1.0 external schema location: " + externalSchemaLocation);
-                // Set external schemalocation.
-                if (externalSchemaLocation != null
-                        && !(externalSchemaLocation.trim()).equals("")) {
-                    parser.setProperty(EXTERNALSCHEMALOCATIONPROPERTY,
-                            externalSchemaLocation);
+                if(needValidation) {
+                    logMetacat.info("DocumentImpl.initalizeParser - 2.1.0 parser sets up validation features since the parameter of the needValidataion is "+needValidation);
+                    parser.setFeature(VALIDATIONFEATURE, true);
+                    //parser.setFeature(NAMESPACEPREFIXESFEATURE, true);
+                    parser.setFeature(SCHEMAVALIDATIONFEATURE, true);
+                    logMetacat.info("DocumentImpl.initalizeParser - 2.1.0 external schema location: " + schemaLocation);
+                    // Set external schemalocation.
+                    if (schemaLocation != null
+                            && !(schemaLocation.trim()).equals("")) {
+                        parser.setProperty(EXTERNALSCHEMALOCATIONPROPERTY,
+                                schemaLocation);
+                    } else {
+                        throw new Exception ("The schema for the docid "+docid+" can't be found in any place. So we can't validate the xml instance.");
+                    }
                 }
                 logMetacat.debug("DocumentImpl.initalizeParser - Using eml 2.1.0 parser configured");
             } else {
@@ -3641,7 +3913,7 @@ public class DocumentImpl
                         && needValidation) {
                 
                     XMLSchemaService xmlss = XMLSchemaService.getInstance();
-                    xmlss.doRefresh();
+                    //xmlss.doRefresh();
                     logMetacat.info("DocumentImpl.initalizeParser - Using General schema parser");
                     // turn on schema validation feature
                     parser.setFeature(VALIDATIONFEATURE, true);
@@ -3655,17 +3927,33 @@ public class DocumentImpl
                     if (xmlss.useFullSchemaValidation() && !allSchemasRegistered) {
                     	parser.setFeature(FULLSCHEMAVALIDATIONFEATURE, true);
                     }
-                    // From DB to find the register external schema location
-                    String externalSchemaLocation = null;
-                    externalSchemaLocation = xmlss.getNameSpaceAndLocationString();
-                    logMetacat.debug("DocumentImpl.initalizeParser - Generic external schema location: " + externalSchemaLocation);              
+                    logMetacat.info("DocumentImpl.initalizeParser - Generic external schema location: " + schemaLocation);              
                     // Set external schemalocation.
-                    if (externalSchemaLocation != null
-                            && !(externalSchemaLocation.trim()).equals("")) {
+                    if (schemaLocation != null
+                            && !(schemaLocation.trim()).equals("")) {
                         parser.setProperty(EXTERNALSCHEMALOCATIONPROPERTY,
-                                externalSchemaLocation);
+                                schemaLocation);
+                    } else {
+                        throw new Exception ("The schema for the document "+docid+" can't be found in any place. So we can't validate the xml instance.");
                     }
-
+                } else if (ruleBase != null && ruleBase.equals(NONAMESPACESCHEMA)
+                        && needValidation) {
+                    //xmlss.doRefresh();
+                    logMetacat.info("DocumentImpl.initalizeParser - Using General schema parser");
+                    // turn on schema validation feature
+                    parser.setFeature(VALIDATIONFEATURE, true);
+                    parser.setFeature(NAMESPACEFEATURE, true);
+                    //parser.setFeature(NAMESPACEPREFIXESFEATURE, true);
+                    parser.setFeature(SCHEMAVALIDATIONFEATURE, true);
+                    logMetacat.info("DocumentImpl.initalizeParser - Generic external no-namespace schema location: " + schemaLocation);              
+                    // Set external schemalocation.
+                    if (schemaLocation != null
+                            && !(schemaLocation.trim()).equals("")) {
+                        parser.setProperty(EXTERNALNONAMESPACESCHEMALOCATIONPROPERTY,
+                                schemaLocation);
+                    } else {
+                        throw new Exception ("The schema for the document "+docid+" can't be found in any place. So we can't validate the xml instance.");
+                    }
                 } else if (ruleBase != null && ruleBase.equals(DTD)
                         && needValidation) {
                     logMetacat.info("DocumentImpl.initalizeParser - Using dtd parser");
@@ -4027,7 +4315,7 @@ public class DocumentImpl
      *
      * @param serverName,
      */
-    private static int getServerCode(String serverName)
+    public static int getServerCode(String serverName)
     {
         PreparedStatement pStmt = null;
         int serverLocation = -2;
@@ -4497,5 +4785,26 @@ public class DocumentImpl
         double end = System.currentTimeMillis()/1000;
         logMetacat.info("DocumentImpl.deleteXMLNodes - The time to delete xml_nodes in UPDATE is "+(end -start));
      
+    }
+    
+    /*
+     * Get the root node id from xml_revisions table by a specified docid and rev
+     */
+    private static long getRevisionRootNodeId(DBConnection conn, String docid, int rev) throws SQLException {
+    	long rootnodeid = -1;
+        String sql = "SELECT rootnodeid FROM xml_revisions WHERE docid = ? and rev = ?";
+        PreparedStatement stmt = null;
+        stmt = conn.prepareStatement(sql);
+        stmt.setString(1, docid);
+        stmt.setInt(2,  rev);
+        ResultSet result = stmt.executeQuery();
+        boolean hasResult = result.next();
+        if (hasResult)
+        {
+          rootnodeid = result.getLong(1);
+        }
+        logMetacat.debug("DocumentImpl.getRevisionRootNodeId - The root node id of docid " + docid+"."+rev +
+                                 " is " + rootnodeid);
+        return rootnodeid;
     }
 }

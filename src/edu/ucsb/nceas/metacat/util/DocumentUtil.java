@@ -40,7 +40,8 @@ import java.util.Vector;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.dbadapter.AbstractDatabase;
 import edu.ucsb.nceas.metacat.DBSAXHandler;
@@ -67,7 +68,7 @@ public class DocumentUtil
 
 	public static AbstractDatabase dbAdapter;
     
-    private static Logger logMetacat = Logger.getLogger(DocumentUtil.class);
+    private static Log logMetacat = LogFactory.getLog(DocumentUtil.class);
     private static char separator = '.';
     private static String prefix = "autogen";
     
@@ -348,7 +349,9 @@ public class DocumentUtil
         String docid = null;
         if (accessionNumber == null) { return docid; }
         int indexOfLastSeperator = accessionNumber.lastIndexOf(separator);
-        docid = accessionNumber.substring(0, indexOfLastSeperator);
+        if (indexOfLastSeperator > 0) {
+            docid = accessionNumber.substring(0, indexOfLastSeperator);
+        }
         logMetacat.debug("DocumentUtil.getDocIdFromAccessionNumber - after parsing accession number, docid is "
                 + docid);
         return docid;

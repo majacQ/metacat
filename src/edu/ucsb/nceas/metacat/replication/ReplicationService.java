@@ -34,7 +34,6 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.StringReader;
 import java.io.Writer;
@@ -46,9 +45,14 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Hashtable;
+import java.util.List;
+import java.util.Map;
 import java.util.Timer;
 import java.util.Vector;
 
@@ -56,16 +60,29 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang.exception.ExceptionUtils;
+import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
-import org.apache.http.conn.scheme.Scheme;
-import org.apache.http.conn.ssl.SSLSocketFactory;
-import org.apache.log4j.Logger;
-import org.dataone.client.RestClient;
+import org.apache.http.StatusLine;
+import org.apache.http.client.ClientProtocolException;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.HttpResponseException;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.dataone.client.auth.CertificateManager;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.dataone.client.rest.RestClient;
+import org.dataone.client.types.AutoCloseHttpClientInputStream;
+import org.dataone.client.utils.HttpUtils;
+import org.dataone.exceptions.MarshallingException;
+import org.dataone.service.types.v1.Identifier;
+import org.dataone.service.types.v1.Session;
+import org.dataone.service.types.v1.Subject;
+import org.dataone.service.types.v2.SystemMetadata;
 import org.dataone.service.util.DateTimeMarshaller;
 import org.dataone.service.util.TypeMarshaller;
-import org.jibx.runtime.JiBXException;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
@@ -73,6 +90,7 @@ import org.xml.sax.XMLReader;
 import edu.ucsb.nceas.metacat.DocumentImpl;
 import edu.ucsb.nceas.metacat.DocumentImplWrapper;
 import edu.ucsb.nceas.metacat.EventLog;
+import edu.ucsb.nceas.metacat.EventLogData;
 import edu.ucsb.nceas.metacat.IdentifierManager;
 import edu.ucsb.nceas.metacat.McdbDocNotFoundException;
 import edu.ucsb.nceas.metacat.McdbException;
@@ -80,13 +98,18 @@ import edu.ucsb.nceas.metacat.accesscontrol.AccessControlException;
 import edu.ucsb.nceas.metacat.accesscontrol.AccessControlForSingleFile;
 import edu.ucsb.nceas.metacat.accesscontrol.PermOrderException;
 import edu.ucsb.nceas.metacat.admin.upgrade.RemoveInvalidReplicas;
+import edu.ucsb.nceas.metacat.admin.upgrade.UpdateDOI;
 import edu.ucsb.nceas.metacat.admin.upgrade.dataone.GenerateORE;
 import edu.ucsb.nceas.metacat.admin.upgrade.dataone.GenerateSystemMetadata;
 import edu.ucsb.nceas.metacat.client.InsufficientKarmaException;
 import edu.ucsb.nceas.metacat.database.DBConnection;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
 import edu.ucsb.nceas.metacat.database.DatabaseService;
+import edu.ucsb.nceas.metacat.dataone.SyncAccessPolicy;
 import edu.ucsb.nceas.metacat.dataone.hazelcast.HazelcastService;
+import edu.ucsb.nceas.metacat.index.MetacatSolrIndex;
+import edu.ucsb.nceas.metacat.object.handler.NonXMLMetadataHandler;
+import edu.ucsb.nceas.metacat.object.handler.NonXMLMetadataHandlers;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.shared.BaseService;
 import edu.ucsb.nceas.metacat.shared.HandlerException;
@@ -119,14 +142,15 @@ public class ReplicationService extends BaseService {
 	private static final int TIMEINTERVALLIMIT = 7200000;
 	public static final String REPLICATIONUSER = "replication";
 	
+	//private static RestClient sslClient = null;
 	private static int CLIENTTIMEOUT = 30000;
 
 	public static final String REPLICATION_LOG_FILE_NAME = "metacatreplication.log";
 
 	private static String DATA_FILE_FLAG = null;
 	public static String METACAT_REPL_ERROR_MSG = null;
-	private static Logger logReplication = Logger.getLogger("ReplicationLogging");
-	private static Logger logMetacat = Logger.getLogger(ReplicationService.class);
+	private static Log logReplication = LogFactory.getLog("ReplicationLogging");
+	private static Log logMetacat = LogFactory.getLog(ReplicationService.class);
 
 	static {
 		// lookup the client timeout
@@ -327,7 +351,7 @@ public class ReplicationService extends BaseService {
 		String dataReplicate = null;
 		String hub = null;
 		Writer out = null;
-		boolean showGenerateSystemMetadata = false;
+		boolean showGenerateSystemMetadata = true;
 		try {
 			response.setContentType("text/xml");
 			out = response.getWriter();
@@ -405,6 +429,42 @@ public class ReplicationService extends BaseService {
 				gore.upgrade();
 				out.write("Generated ORE maps for server " + serverid);
 				
+			} else if (subaction.equals("updatedoi")) {
+				UpdateDOI udoi = new UpdateDOI();
+				int serverLocation = -1;
+				String serverid = ((String[]) params.get("serverid"))[0];
+				serverLocation = Integer.parseInt(serverid);
+				udoi.setServerLocation(serverLocation );
+								
+				//Get the list of IDs, if any were given
+				String ids = ((String[]) params.get("ids"))[0];
+				
+				//Get the formatId, if one was given
+				String formatIds = ((String[]) params.get("formatIds"))[0];
+				
+				//Allow DOI's to be updated by both ID and formatId
+				if((ids.length() > 0) || (formatIds.length() > 0)){
+					//If at least one ID was given, update their DOI registrations
+					if(ids.length() > 0){
+						String delimeter = " "; 
+						String[] idArray = ids.split(delimeter);	
+						List<String> idList = Arrays.asList(idArray);
+						udoi.upgradeById(idList);
+					}
+					
+					//If at least one formatId was given, update the DOI registrations
+					if(formatIds.length() > 0){
+						String delimeter = " "; 
+						String[] formatIdArray = formatIds.split(delimeter);	
+						List<String> formatIdList = Arrays.asList(formatIdArray);
+						udoi.upgradeByFormatId(formatIdList);
+					}
+				}
+				else{
+					udoi.upgrade();
+				}
+				out.write("Updated DOI's for server " + serverid);
+				
 			} else if (subaction.equals("removeinvalidreplicas")) {
 				RemoveInvalidReplicas rir = new RemoveInvalidReplicas();
 				int serverLocation = -1;
@@ -414,17 +474,46 @@ public class ReplicationService extends BaseService {
 				rir.upgrade();
 				out.write("Removed invalid replicas for server " + serverid);
 				
+			} else if (subaction.equals("syncaccesspolicy")) {
+				SyncAccessPolicy syncAP = new SyncAccessPolicy();
+				response.setContentType("text/html");
+				out = response.getWriter();
+				if (params.containsKey("pid")) {
+					String[] pids = params.get("pid");
+					logMetacat.debug("Attempting to sync access policies for pids: " + pids);
+					ArrayList<String> pidsToSync = new ArrayList<String>(Arrays.asList(pids));
+					try {
+						List<Identifier> syncedPids = syncAP.sync(pidsToSync);
+						out.write("<html><body>Syncing access policies has completed for " + syncedPids.size() + " pids.</body></html>");
+					} catch (Exception e) {
+						logMetacat.error("Error syncing all access polies: "
+								+ e.getMessage());
+						response.setContentType("text/html");
+						out = response.getWriter();
+						out.write("<html><body>Error syncing access policies</body></html>");
+					}
+				} else {
+					logMetacat.debug("Request to sync all access policies has been submitted.");
+					try {
+						syncAP.syncAll();
+						out.write("<html><body>Request to sync all access policies has been submitted.</body></html>");
+					} catch (Exception e) {
+						logMetacat.error("Error syncing access policies: "
+								+ e.getMessage());
+						out.write("<html><body>Error syncing access policies: " + e.getMessage() + " </body></html>");
+					}
+				}
 			} else {
 			
 				out.write("<error>Unkonwn subaction</error>");
 				return;
 			}
 			
-			// show SM generate button?
-			String dataoneConfigured = PropertyService.getProperty("configutil.dataoneConfigured");
-			if (dataoneConfigured != null) {
-				showGenerateSystemMetadata = Boolean.parseBoolean(dataoneConfigured);
-			}
+			// hide SM/ORE buttons?
+//			String dataoneConfigured = PropertyService.getProperty("configutil.dataoneConfigured");
+//			if (dataoneConfigured != null) {
+//				showGenerateSystemMetadata = Boolean.parseBoolean(dataoneConfigured);
+//			}
 			
 			// always list them after processing
 			response.setContentType("text/html");
@@ -437,8 +526,10 @@ public class ReplicationService extends BaseService {
 			if (showGenerateSystemMetadata) {
 				out.write("<td><b>System Metadata</b></td>");
 				out.write("<td><b>ORE Maps</b></td>");
+				out.write("<td><b>DOI Registrations</b></td>");
 				out.write("<td><b>Invalid Replicas</b></td>");
 			}
+			out.write("<td><b>Sync Access Policies</b></td>");
 			out.write("</tr>");
 
 			pstmt = dbConn.prepareStatement("SELECT serverid, server, last_checked, replicate, datareplicate, hub FROM xml_replication");
@@ -471,6 +562,19 @@ public class ReplicationService extends BaseService {
 					out.write("<input type='submit' value='Generate ORE'/>");
 					out.write("</form></td>");
 					
+					// for DOI updating
+					out.write("<td><form action='" + request.getContextPath() + "/admin'>");
+					out.write("<input name='serverid' type='hidden' value='" + serverId + "'/>");
+					out.write("<input name='configureType' type='hidden' value='replication'/>");
+					out.write("<input name='action' type='hidden' value='servercontrol'/>");
+					out.write("<input name='subaction' type='hidden' value='updatedoi'/>");
+					out.write("<label>Update by ID:</label>");
+					out.write("<textarea name='ids'></textarea>");
+					out.write("<label>Update by formatId:</label>");
+					out.write("<textarea name='formatIds'></textarea>");
+					out.write("<input type='submit' value='Update DOIs'/>");
+					out.write("</form></td>");
+					
 					// for invalid replicas
 					out.write("<td><form action='" + request.getContextPath() + "/admin'>");
 					out.write("<input name='serverid' type='hidden' value='" + serverId + "'/>");
@@ -484,6 +588,15 @@ public class ReplicationService extends BaseService {
 					out.write("<input type='submit' value='Remove Invalid Replicas' " + disabled + " />");
 					out.write("</form></td>");
 				}
+				// for syncing access policies (MN -> CN)
+				out.write("<td><form action='" + request.getContextPath() + "/admin'>");
+				out.write("<input name='serverid' type='hidden' value='" + serverId + "'/>");
+				out.write("<input name='configureType' type='hidden' value='replication'/>");
+				out.write("<input name='action' type='hidden' value='servercontrol'/>");
+				out.write("<input name='subaction' type='hidden' value='syncaccesspolicy'/>");
+				out.write("<input type='submit' value='Sync access policies'/>");
+				out.write("</form></td>");
+				
 				out.write("</tr>");
 
 				tablehasrows = rs.next();
@@ -553,7 +666,8 @@ public class ReplicationService extends BaseService {
 			URL u = new URL("https://" + server + "?server="
 					+ MetacatUtil.getLocalReplicationServerName() + "&action=read&docid="
 					+ docid);
-			String xmldoc = ReplicationService.getURLContent(u);
+			byte[] xmlBytes = ReplicationService.getURLBytes(u);
+            String xmldoc = new String(xmlBytes, "UTF-8");
 
 			// get the document info from server
 			URL docinfourl = new URL("https://" + server + "?server="
@@ -577,8 +691,9 @@ public class ReplicationService extends BaseService {
 			String homeServer = (String) docinfoHash.get("home_server");
 			
 			// process system metadata
+			SystemMetadata sysMeta = null;
 			if (systemMetadataXML != null) {
-				SystemMetadata sysMeta = 
+				sysMeta = 
 					TypeMarshaller.unmarshalTypeFromStream(
 							SystemMetadata.class,
 							new ByteArrayInputStream(systemMetadataXML.getBytes("UTF-8")));
@@ -590,8 +705,7 @@ public class ReplicationService extends BaseService {
 		      	}
 				// save the system metadata
 				HazelcastService.getInstance().getSystemMetadataMap().put(sysMeta.getIdentifier(), sysMeta);
-				// submit for indexing
-                HazelcastService.getInstance().getIndexQueue().add(sysMeta);
+				
 			}
       
 			// dates
@@ -604,81 +718,128 @@ public class ReplicationService extends BaseService {
 			// Get Document type
 			String docType = (String) docinfoHash.get("doctype");
 			logReplication.info("ReplicationService.handleForceReplicateRequest - docType: " + docType);
-			String parserBase = null;
-			// this for eml2 and we need user eml2 parser
-			if (docType != null
-					&& (docType.trim()).equals(DocumentImpl.EML2_0_0NAMESPACE)) {
-				logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml200 document!");
-				parserBase = DocumentImpl.EML200;
-			} else if (docType != null
-					&& (docType.trim()).equals(DocumentImpl.EML2_0_1NAMESPACE)) {
-				logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml2.0.1 document!");
-				parserBase = DocumentImpl.EML200;
-			} else if (docType != null
-					&& (docType.trim()).equals(DocumentImpl.EML2_1_0NAMESPACE)) {
-				logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml2.1.0 document!");
-				parserBase = DocumentImpl.EML210;
-			} else if (docType != null
-					&& (docType.trim()).equals(DocumentImpl.EML2_1_1NAMESPACE)) {
-				logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml2.1.1 document!");
-				parserBase = DocumentImpl.EML210;
-			}
-			logReplication.warn("ReplicationService.handleForceReplicateRequest - The parserBase is: " + parserBase);
+			
+			NonXMLMetadataHandler handler = NonXMLMetadataHandlers.newNonXMLMetadataHandler(sysMeta.getFormatId());
+	        if ( handler != null ) {
+	            //non-xml objects route
+	            try {
+	                String user = (String) docinfoHash.get("user_owner");
+	                int serverCode = DocumentImpl.getServerCode(homeServer);
+	                logReplication.info("ReplicationHander.handleForceReplicateRequest - in the non-xml route, the user is " 
+	                                 + user + " for the identifier " + sysMeta.getIdentifier() + " and the docid " + docid +
+	                                 " with the check sume in the system metadata " + sysMeta.getChecksum().getValue() +
+	                                 ". The docment has the server code " + serverCode + " with home server " + homeServer);
+	                ByteArrayInputStream source = new ByteArrayInputStream(xmlBytes);
+	                EventLogData event =  new EventLogData(request.getRemoteAddr(), request.getHeader("User-Agent"),
+	                                                    ReplicationService.REPLICATIONUSER, docid, "create");
+	                handler.saveReplication(source, docid, sysMeta, user, serverCode, server, event);
+	                if(sysMeta != null) {
+	                    MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
+                    }
+	            } catch (Exception e) {
+	                HazelcastService.getInstance().getSystemMetadataMap().remove(sysMeta.getIdentifier());
+	                throw e;
+	            }
+	        } else {
+	            //xml objects route
+	            String parserBase = null;
+	            // this for eml2 and we need user eml2 parser
+	            if (docType != null
+	                    && (docType.trim()).equals(DocumentImpl.EML2_0_0NAMESPACE)) {
+	                logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml200 document!");
+	                parserBase = DocumentImpl.EML200;
+	            } else if (docType != null
+	                    && (docType.trim()).equals(DocumentImpl.EML2_0_1NAMESPACE)) {
+	                logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml2.0.1 document!");
+	                parserBase = DocumentImpl.EML200;
+	            } else if (docType != null
+	                    && (docType.trim()).equals(DocumentImpl.EML2_1_0NAMESPACE)) {
+	                logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml2.1.0 document!");
+	                parserBase = DocumentImpl.EML210;
+	            } else if (docType != null
+	                    && (docType.trim()).equals(DocumentImpl.EML2_1_1NAMESPACE)) {
+	                logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml2.1.1 document!");
+	                parserBase = DocumentImpl.EML210;
+	            } else if (docType != null
+	                    && (docType.trim()).equals(DocumentImpl.EML2_2_0NAMESPACE)) {
+	                logReplication.warn("ReplicationService.handleForceReplicateRequest - This is an eml2.2.0 document!");
+	                parserBase = DocumentImpl.EML210;
+	                logReplication.warn("ReplicationService.handleForceReplicateRequest - The parserBase is: " + parserBase);
+	            }
+	            
+	            /*String formatId = null;
+	            //get the format id from the system metadata 
+	            if(sysMeta != null && sysMeta.getFormatId() != null) {
+	                  logMetacat.debug("ReplicationService.handleForceReplicateRequest - the format id will be got from the system metadata for the object "+docid);
+	                  formatId = sysMeta.getFormatId().getValue();
+	            }*/
+	              
+	            // Get DBConnection from pool
+	            dbConn = DBConnectionPool
+	                    .getDBConnection("MetacatReplication.handleForceReplicateRequest");
+	            serialNumber = dbConn.getCheckOutSerialNumber();
+	            // write the document to local database
+	            DocumentImplWrapper wrapper = new DocumentImplWrapper(parserBase, false, false);
+	            //try this independently so we can set access even if the update action is invalid (i.e docid has not changed)
+	            try {
+	                wrapper.writeReplication(dbConn, xmldoc, xmlBytes, null, null,
+	                        dbaction, docid, null, null, homeServer, server, createdDate,
+	                        updatedDate);
+	            } finally {
+	                if(sysMeta != null) {
+	                    // submit for indexing. When the doc writing process fails, the index process will fail as well. But this failure
+	                    // will not interrupt the process.
+	                    try {
+	                        MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
+	                    } catch (Exception ee) {
+	                        logReplication.warn("ReplicationService.handleForceReplicateRequest - couldn't index the doc since "+ee.getMessage());
+	                    }
+	                    
+	                }
+	                //process extra access rules before dealing with the write exception (doc exist already)
+	                try {
+	                    // check if we had a guid -> docid mapping
+	                    String docidNoRev = DocumentUtil.getDocIdFromAccessionNumber(docid);
+	                    int rev = DocumentUtil.getRevisionFromAccessionNumber(docid);
+	                    IdentifierManager.getInstance().getGUID(docidNoRev, rev);
+	                    // no need to create the mapping if we have it
+	                } catch (McdbDocNotFoundException mcdbe) {
+	                    // create mapping if we don't
+	                    IdentifierManager.getInstance().createMapping(docid, docid);
+	                }
+	                Vector<XMLAccessDAO> accessControlList = dih.getAccessControlList();
+	                if (accessControlList != null) {
+	                    AccessControlForSingleFile acfsf = new AccessControlForSingleFile(docid);
+	                    for (XMLAccessDAO xmlAccessDAO : accessControlList) {
+	                        try {
+	                            if (!acfsf.accessControlExists(xmlAccessDAO)) {
+	                                acfsf.insertPermissions(xmlAccessDAO);
+	                                logReplication.info("ReplicationService.handleForceReplicateRequest - document " + docid
+	                                        + " permissions added to DB");
+	                            }
+	                        } catch (PermOrderException poe) {
+	                            // this is problematic, but should not prevent us from replicating
+	                            // see https://redmine.dataone.org/issues/2583
+	                            String msg = "Could not insert access control for: " + docid + " Message: " + poe.getMessage();
+	                            logMetacat.error(msg, poe);
+	                            logReplication.error(msg, poe);
+	                        }
+	                    }
+	                }
+	                
+	                // process the real owner and updater
+	                String user = (String) docinfoHash.get("user_owner");
+	                String updated = (String) docinfoHash.get("user_updated");
+	                updateUserOwner(dbConn, docid, user, updated);
 
-			// Get DBConnection from pool
-			dbConn = DBConnectionPool
-					.getDBConnection("MetacatReplication.handleForceReplicateRequest");
-			serialNumber = dbConn.getCheckOutSerialNumber();
-			// write the document to local database
-			DocumentImplWrapper wrapper = new DocumentImplWrapper(parserBase, false, false);
-			//try this independently so we can set access even if the update action is invalid (i.e docid has not changed)
-			try {
-				wrapper.writeReplication(dbConn, xmldoc, null, null,
-						dbaction, docid, null, null, homeServer, server, createdDate,
-						updatedDate);
-			} finally {
-
-				//process extra access rules before dealing with the write exception (doc exist already)
-				try {
-		        	// check if we had a guid -> docid mapping
-		        	String docidNoRev = DocumentUtil.getDocIdFromAccessionNumber(docid);
-		        	int rev = DocumentUtil.getRevisionFromAccessionNumber(docid);
-		        	IdentifierManager.getInstance().getGUID(docidNoRev, rev);
-		        	// no need to create the mapping if we have it
-		        } catch (McdbDocNotFoundException mcdbe) {
-		        	// create mapping if we don't
-		        	IdentifierManager.getInstance().createMapping(docid, docid);
-		        }
-		        Vector<XMLAccessDAO> accessControlList = dih.getAccessControlList();
-		        if (accessControlList != null) {
-		        	AccessControlForSingleFile acfsf = new AccessControlForSingleFile(docid);
-		        	for (XMLAccessDAO xmlAccessDAO : accessControlList) {
-		        		try {
-			        		if (!acfsf.accessControlExists(xmlAccessDAO)) {
-			        			acfsf.insertPermissions(xmlAccessDAO);
-								logReplication.info("ReplicationService.handleForceReplicateRequest - document " + docid
-										+ " permissions added to DB");
-			        		}
-		        		} catch (PermOrderException poe) {
-		        			// this is problematic, but should not prevent us from replicating
-		        			// see https://redmine.dataone.org/issues/2583
-		        			String msg = "Could not insert access control for: " + docid + " Message: " + poe.getMessage();
-		        			logMetacat.error(msg, poe);
-		        			logReplication.error(msg, poe);
-		        		}
-		            }
-		        }
-		        
-		        // process the real owner and updater
-				String user = (String) docinfoHash.get("user_owner");
-				String updated = (String) docinfoHash.get("user_updated");
-		        updateUserOwner(dbConn, docid, user, updated);
-
-				logReplication.info("ReplicationService.handleForceReplicateRequest - document " + docid + " added to DB with "
-						+ "action " + dbaction);
-				
-				EventLog.getInstance().log(request.getRemoteAddr(), request.getHeader("User-Agent"), REPLICATIONUSER, docid, dbaction);
-			}
+	                logReplication.info("ReplicationService.handleForceReplicateRequest - document " + docid + " added to DB with "
+	                        + "action " + dbaction);
+	                
+	                EventLog.getInstance().log(request.getRemoteAddr(), request.getHeader("User-Agent"), REPLICATIONUSER, docid, dbaction);
+	            }
+	            
+	        }
+			
 		} catch (SQLException sqle) {
 			logMetacat.error("ReplicationService.handleForceReplicateRequest - " + ReplicationService.METACAT_REPL_ERROR_MSG);                         
 			logReplication.error("ReplicationService.handleForceReplicateRequest - SQL error when adding doc " + docid + 
@@ -848,17 +1009,21 @@ public class ReplicationService extends BaseService {
 				String datafilePath = PropertyService
 						.getProperty("application.datafilepath");
 
-				InputStream inputStream = getURLStream(url);
+				
 				
 				//register data file into xml_documents table and write data file
 				//into file system
+				InputStream inputStream = null;
 				try {
+				    inputStream = getURLStream(url);
 					DocumentImpl.writeDataFileInReplication(inputStream,
 							datafilePath, docName, docType, docid, null, docHomeServer,
 							server, DocumentImpl.DOCUMENTTABLE, false, createdDate,
 							updatedDate);
 				} catch (Exception e) {
 					writeException = e;
+				} finally {
+				    IOUtils.closeQuietly(inputStream);
 				}
 
 			}
@@ -888,7 +1053,7 @@ public class ReplicationService extends BaseService {
 	      	  // save the system metadata
 	      	  HazelcastService.getInstance().getSystemMetadataMap().put(sysMeta.getIdentifier(), sysMeta);
 	      	  // submit for indexing
-              HazelcastService.getInstance().getIndexQueue().add(sysMeta);
+              MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
 	        }
 	        
 	        // process the access control
@@ -1018,7 +1183,7 @@ public class ReplicationService extends BaseService {
 	}
 	
 	public static Hashtable<String, String> getDocumentInfoMap(String docid)
-			throws HandlerException, AccessControlException, JiBXException,
+			throws HandlerException, AccessControlException, MarshallingException,
 			IOException, McdbException, SAXException {
 		
 		// Try get docid info from remote server
@@ -1046,7 +1211,7 @@ public class ReplicationService extends BaseService {
 	 * @throws IOException
 	 * @throws McdbException
 	 */
-	public static String getDocumentInfo(String docid) throws AccessControlException, JiBXException, IOException, McdbException {
+	public static String getDocumentInfo(String docid) throws AccessControlException, MarshallingException, IOException, McdbException {
 		StringBuffer sb = new StringBuffer();
 
 		DocumentImpl doc = new DocumentImpl(docid);
@@ -1160,7 +1325,7 @@ public class ReplicationService extends BaseService {
 							new ByteArrayInputStream(systemMetadataXML.getBytes("UTF-8")));
 				HazelcastService.getInstance().getSystemMetadataMap().put(sysMeta.getIdentifier(), sysMeta);
 				// submit for indexing
-                HazelcastService.getInstance().getIndexQueue().add(sysMeta);
+                MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
 			}
       
 			logReplication.info("ReplicationService.handleForceReplicateSystemMetadataRequest - processed guid: " + guid);
@@ -1361,6 +1526,15 @@ public class ReplicationService extends BaseService {
 							+ me.getMessage());
 			// e.printStackTrace(System.out);
 			errorMsg = me.getMessage();
+		} catch (Exception e) {
+			logReplication
+			.error("ReplicationService.handleGetDocumentRequest - General exception encountered."
+					+ "handlGetDocumentRequest for file: "
+					+ documentPath
+					+ " : "
+					+ e.getMessage());
+			// e.printStackTrace(System.out);
+			errorMsg = e.getMessage();
 		} finally {
             IOUtils.closeQuietly(fos);
             IOUtils.closeQuietly(is);
@@ -1965,6 +2139,53 @@ public class ReplicationService extends BaseService {
 
 		return serverCode;
 	}
+	
+	/**
+	 * Returns a Map of serverCode=serverName 
+	 * @return Map of server codes to names (URIs)
+	 */
+	public static Map<Integer, String> getServerCodes() throws ServiceException {
+		DBConnection dbConn = null;
+		int serialNumber = -1;
+		PreparedStatement pstmt = null;
+		
+		Map<Integer, String> codes = new HashMap<Integer, String>();
+
+		try {
+
+			dbConn = DBConnectionPool.getDBConnection("MetacatReplication.getServerCodes");
+			serialNumber = dbConn.getCheckOutSerialNumber();
+			pstmt = dbConn.prepareStatement("SELECT serverid, server FROM xml_replication ");
+			pstmt.execute();
+			ResultSet rs = pstmt.getResultSet();
+			while (rs.next()) {
+				int serverCode = rs.getInt(1);
+				String server = rs.getString(2);
+				codes.put(serverCode, server);
+			}
+			pstmt.close();
+			
+		} catch (SQLException sqle) {
+			throw new ServiceException("ReplicationService.getServerCodes - " 
+					+ "SQL error when getting server map: " + sqle.getMessage());
+
+		} finally {
+			try {
+				pstmt.close();
+			}//try
+			catch (Exception ee) {
+				logMetacat.error("ReplicationService.getServerCodes - " + ReplicationService.METACAT_REPL_ERROR_MSG);                         
+				logReplication.error("ReplicationService.getServerCodes - Error in MetacatReplicatio.getServerCodes: "
+						+ ee.getMessage());
+
+			}//catch
+			finally {
+				DBConnectionPool.returnDBConnection(dbConn, serialNumber);
+			}//finally
+		}//finally
+
+		return codes;
+	}
 
 	/**
 	 * Method to get a host server information for given docid
@@ -2105,22 +2326,21 @@ public class ReplicationService extends BaseService {
 	 * @return a string representing the content of the url
 	 * @throws java.io.IOException
 	 */
-	public static String getURLContent(URL u) throws java.io.IOException {
+	public static String getURLContent(URL u) throws Exception {
 		char istreamChar;
 		int istreamInt;
 		// get the response content
-		InputStream input = getURLStream(u);
-		logReplication.info("ReplicationService.getURLContent - After getting response from: " + u.toString());
-		InputStreamReader istream = new InputStreamReader(input);
-		StringBuffer serverResponse = new StringBuffer();
-		while ((istreamInt = istream.read()) != -1) {
-			istreamChar = (char) istreamInt;
-			serverResponse.append(istreamChar);
+		InputStream input = null;
+		String content = null;
+		try {
+		    input = getURLStream(u);
+		    logReplication.info("ReplicationService.getURLContent - After getting response from: " + u.toString());
+		    content = IOUtils.toString(input, "UTF-8");
+		} 
+		finally {
+		    IOUtils.closeQuietly(input);
 		}
-		istream.close();
-		input.close();
-
-		return serverResponse.toString();
+        return content;
 	}
 	
 	/**
@@ -2129,18 +2349,55 @@ public class ReplicationService extends BaseService {
 	 * @return a InputStream representing the content of the url
 	 * @throws java.io.IOException
 	 */
-	public static InputStream getURLStream(URL u) throws java.io.IOException {
+	public static InputStream getURLStream(URL u) throws Exception {
 	    logReplication.info("Getting url stream from " + u.toString());
-		logReplication.info("ReplicationService.getURLStream - Before sending request to: " + u.toString());
-		// use httpclient to set up SSL
-		RestClient client = getSSLClient();
-		HttpResponse response = client.doGetRequest(u.toString());
-		// get the response content
-		InputStream input = response.getEntity().getContent();
-		logReplication.info("ReplicationService.getURLStream - After getting response from: " + u.toString());
-		
-		return input;		
+	    logReplication.info("ReplicationService.getURLStream - Before sending request to: " + u.toString());
+	    // use httpclient to set up SSL
+
+	    InputStream input = null;
+	    try {
+	        RestClient client = getSSLClient();
+	        HttpResponse response = client.doGetRequest(u.toString(),null);
+	        // get the response content
+	        StatusLine statusLine = response.getStatusLine();
+	        HttpEntity entity = response.getEntity();
+	        logReplication.info("ReplicationService.getURLStream - After getting response from: " + u.toString());
+	        if (statusLine.getStatusCode() >= 300) {
+	            throw new HttpResponseException(
+	                    statusLine.getStatusCode(),
+	                    "ReplicationService.getURLStream - " + statusLine.getReasonPhrase());
+	        }
+	        if (entity == null) {
+	            throw new ClientProtocolException("ReplicationService.getURLStream - Response contains no content");
+	        }
+	        input = new AutoCloseHttpClientInputStream(entity.getContent(), client.getHttpClient());
+	    } 
+	    catch (Throwable t) {
+	        logReplication.error("Unexpected Throwable encountered.  Logging and moving on: " +
+	                t.getClass().getCanonicalName() + ": " + t.getMessage());
+	        logReplication.error(ExceptionUtils.getStackTrace(t));
+	        throw new Exception(t);
+	    }
+		return input;
 	}
+	
+	/**
+     * This method returns a byte array after opening a url
+     * @param u the url to return the content from
+     * @return a InputStream representing the content of the url
+     * @throws java.io.IOException
+     */
+    public static byte[] getURLBytes(URL u) throws Exception {
+        InputStream input = null;
+        try {
+            input = getURLStream(u);
+            byte[] bytes = IOUtils.toByteArray(input);
+            return bytes;
+        } 
+        finally {
+            IOUtils.closeQuietly(input);
+        }
+    }
 	
 	/**
 	 * Sets up an HttpClient with SSL connection.
@@ -2148,47 +2405,49 @@ public class ReplicationService extends BaseService {
 	 * @return
 	 */
 	private static RestClient getSSLClient() {
-		RestClient client = new RestClient();
+	    RestClient sslClient = null;
+	    if (sslClient == null) {
 		
-		// set up this server's client identity
-		String subject = null;
-		try {
-			// TODO: should there be alternative ways to get the key and certificate?
-			String certificateFile = PropertyService.getProperty("replication.certificate.file");
-	    	String keyFile = PropertyService.getProperty("replication.privatekey.file");
-			String keyPassword = PropertyService.getProperty("replication.privatekey.password");
-			X509Certificate certificate = CertificateManager.getInstance().loadCertificateFromFile(certificateFile);
-			PrivateKey privateKey = CertificateManager.getInstance().loadPrivateKeyFromFile(keyFile, keyPassword);
-			subject = CertificateManager.getInstance().getSubjectDN(certificate);
-			CertificateManager.getInstance().registerCertificate(subject, certificate, privateKey);
-		} catch (Exception e) {
-			// this is pretty much required for replication communication
-			logReplication.warn("Could not find server's client certificate/private key: " + e.getMessage());
-		}
-		
-		// set the configured timeout
-		client.setTimeouts(CLIENTTIMEOUT);
+	        // set up this server's client identity
+	        String subject = null;
+	        try {
+	            // TODO: should there be alternative ways to get the key and certificate?
+	            String certificateFile = PropertyService.getProperty("replication.certificate.file");
+	            String keyFile = PropertyService.getProperty("replication.privatekey.file");
+	            String keyPassword = PropertyService.getProperty("replication.privatekey.password");
+	            X509Certificate certificate = CertificateManager.getInstance().loadCertificateFromFile(certificateFile);
+	            PrivateKey privateKey = CertificateManager.getInstance().loadPrivateKeyFromFile(keyFile, keyPassword);
+	            subject = CertificateManager.getInstance().getSubjectDN(certificate);
+	            CertificateManager.getInstance().registerCertificate(subject, certificate, privateKey);
+	        } catch (Exception e) {
+	            // this is pretty much required for replication communication
+	            logReplication.warn("Could not find server's client certificate/private key: " + e.getMessage());
+	        }
 
-		SSLSocketFactory socketFactory = null;
-		try {
-			socketFactory = CertificateManager.getInstance().getSSLSocketFactory(subject);
-		} catch (FileNotFoundException e) {
-			// these are somewhat expected for anonymous client use
-			logReplication.warn("Could not set up SSL connection for client - likely because the certificate could not be located: " + e.getMessage());
-		} catch (Exception e) {
-			// this is likely more severe
-			logReplication.warn("Funky SSL going on: " + e.getClass() + ":: " + e.getMessage());
-		}
-		try {
-			//443 is the default port, this value is overridden if explicitly set in the URL
-			Scheme sch = new Scheme("https", 443, socketFactory);
-			client.getHttpClient().getConnectionManager().getSchemeRegistry().register(sch);
-		} catch (Exception e) {
-			// this is likely more severe
-			logReplication.error("Failed to set up SSL connection for client. Continuing. " + e.getClass() + ":: " + e.getMessage(), e);
-		}
-		return client;
+	        try {
+	            RequestConfig rc = RequestConfig.custom()
+	                    .setConnectionRequestTimeout(CLIENTTIMEOUT)
+	                    .setConnectTimeout(CLIENTTIMEOUT)
+	                    .setSocketTimeout(CLIENTTIMEOUT).build();
+	            Boolean monitorStaleConnections = false;
+	            HttpClient hc = HttpUtils.getHttpClientBuilder(HttpUtils.selectSession(subject), monitorStaleConnections)
+	                    .setDefaultRequestConfig(rc)
+	                    .build();
+	            
+	            sslClient = new RestClient(hc);
+	        } 
+	        catch (FileNotFoundException e) {
+	            // these are somewhat expected for anonymous client use
+	            logReplication.warn("Could not set up SSL connection for client - likely because the certificate could not be located: " + e.getMessage());
+	        }
+	        catch (Exception e) {
+	            // this is likely more severe
+	            logReplication.error("Failed to set up SSL connection for client. Continuing. " + e.getClass() + ":: " + e.getMessage(), e);
+	        }
+	    }
+		return sslClient;
 	}
+
 	
 
 //	/**

@@ -27,6 +27,7 @@
 package edu.ucsb.nceas.metacat.admin;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.Vector;
 
 import javax.servlet.ServletConfig;
@@ -36,8 +37,10 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
+import edu.ucsb.nceas.metacat.DBTransform;
 import edu.ucsb.nceas.metacat.MetaCatServlet;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.service.SessionService;
@@ -49,6 +52,7 @@ import edu.ucsb.nceas.metacat.util.RequestUtil;
 import edu.ucsb.nceas.metacat.util.SkinUtil;
 import edu.ucsb.nceas.metacat.util.SystemUtil;
 import edu.ucsb.nceas.utilities.GeneralPropertyException;
+import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 
 /**
  * Entry servlet for the metadata configuration utility
@@ -57,7 +61,7 @@ public class MetacatAdminServlet extends HttpServlet {
 
 	private static final long serialVersionUID = 1L;
 	
-	private Logger logMetacat = Logger.getLogger(MetacatAdminServlet.class);
+	private Log logMetacat = LogFactory.getLog(MetacatAdminServlet.class);
 	
     /**
 	 * Initialize the servlet
@@ -93,7 +97,7 @@ public class MetacatAdminServlet extends HttpServlet {
 	private void handleGetOrPost(HttpServletRequest request,
 			HttpServletResponse response) throws ServletException, IOException {
 		String action = request.getParameter("configureType");
-		logMetacat.debug("MetacatAdminServlet.handleGetOrPost - Processing admin action: " + action);
+		logMetacat.info("MetacatAdminServlet.handleGetOrPost - Processing admin action: " + action);
 		Vector<String> processingMessage = new Vector<String>();
 		Vector<String> processingErrors = new Vector<String>();
 
@@ -133,23 +137,7 @@ public class MetacatAdminServlet extends HttpServlet {
 
 			if (action == null || action.equals("configure")) {
 				// Forward the request main configuration page
-				request.setAttribute("metaCatVersion", SystemUtil.getMetacatVersion()); 
-			    request.setAttribute("propsConfigured", new Boolean(PropertyService.arePropertiesConfigured()));
-			    request.setAttribute("authConfigured", new Boolean(AuthUtil.isAuthConfigured()));
-			    // TODO MCD figure out if we still need an org section
-			    //request.setAttribute("orgsConfigured", new Boolean(OrganizationUtil.areOrganizationsConfigured()));
-			    request.setAttribute("skinsConfigured", new Boolean(SkinUtil.areSkinsConfigured()));
-			    request.setAttribute("metacatConfigured", new Boolean(ConfigurationUtil.isMetacatConfigured()));	
-			    request.setAttribute("geoserverConfigured", 
-			    		PropertyService.getProperty("configutil.geoserverConfigured"));
-			    request.setAttribute("dataoneConfigured", 
-			    		PropertyService.getProperty("configutil.dataoneConfigured"));
-			    request.setAttribute("metcatServletInitialized", MetaCatServlet.isFullyInitialized());
-			    if (PropertyService.arePropertiesConfigured()) {
-					request.setAttribute("databaseVersion", 
-							DBAdmin.getInstance().getDBVersion());
-					request.setAttribute("contextURL", SystemUtil.getContextURL());
-				}
+			    intitialConfigurationParameters(request);
 				RequestUtil.forwardRequest(request, response,
 						"/admin/metacat-configuration.jsp?configureType=configure", null);
 				return;
@@ -178,10 +166,6 @@ public class MetacatAdminServlet extends HttpServlet {
 				// process login
 				BackupAdmin.getInstance().configureBackup(request, response);
 				return;
-			} else if (action.equals("geoserver")) {
-				// process geoserver password change
-				GeoserverAdmin.getInstance().configureGeoserver(request, response);
-				return;
 			} else if (action.equals("dataone")) {
 				// process dataone config
 				D1Admin.getInstance().configureDataONE(request, response);
@@ -190,24 +174,27 @@ public class MetacatAdminServlet extends HttpServlet {
 				// process replication config
 				ReplicationAdmin.getInstance().handleRequest(request, response);
 				return;
+			} else if (action.equals("ezid")) {
+                // process replication config
+                EZIDAdmin.getInstance().configureEZID(request, response);
+                return; 
+			} else if (action.equals("quota")) {
+                // process the quota config
+                QuotaAdmin.getInstance().configureQuota(request, response);
+                return;
+			} else if (action.equals("solrserver")) {
+                // process replication config
+                SolrAdmin.getInstance().configureSolr(request, response);
+                return; 
+			} else if (action.equals("refreshStylesheets")) {
+			    clearStylesheetCache(response);
+			    return;
 			} else {
 				String errorMessage = "MetacatAdminServlet.handleGetOrPost - Invalid action in configuration request: " + action;
 				logMetacat.error(errorMessage);
 				processingErrors.add(errorMessage);
 			} 
-			
-			if (processingErrors.size() > 0) {
-				RequestUtil.clearRequestMessages(request);
-				RequestUtil.setRequestErrors(request,processingErrors);
-				// if the action that threw an exception was "configure" just go straight to the metacat
-				// configuration.  This will avoid a loop.  Otherwise, call the admin servlet with 
-				// configuration action.
-				if (action != null && action.equals("configure")) {
-					RequestUtil.forwardRequest(request, response, "/admin/metacat-configuration.jsp", null);
-				} else {
-					RequestUtil.forwardRequest(request, response, "/admin?configureType=configure", null);
-				}
-			}
+
 		} catch (GeneralPropertyException ge) {
 			String errorMessage = 
 				"MetacatAdminServlet.handleGetOrPost - Property problem while handling request: " + ge.getMessage();
@@ -229,5 +216,67 @@ public class MetacatAdminServlet extends HttpServlet {
 			logMetacat.error(errorMessage);
 			processingErrors.add(errorMessage);
 		}
-	}       	
+		
+		if (processingErrors.size() > 0) {
+		    RequestUtil.clearRequestMessages(request);
+            RequestUtil.setRequestErrors(request,processingErrors);
+            //something badly happened. We need to go to back to the configuration page and display the error message.
+            //directly forwarding to the metacat-configuration.jsp page rather than /admin, which will go through the servlet class again, can avoid a infinite loop.
+            try {
+                intitialConfigurationParameters(request);
+                RequestUtil.forwardRequest(request, response, "/admin/metacat-configuration.jsp?configureType=configure", null);
+            } catch (Exception e) {
+                //Wow we can't display the error message on a web page. Only print them out.
+                logMetacat.error("MetacatAdminServlet.handleGetOrPost - couldn't forward the error message to the metacat configuration page since " + e.getMessage());
+            }
+        }
+	}
+	
+	/*
+	 * Method to set up the forceBuild true which will clear the style sheet map.
+	 */
+	private void clearStylesheetCache(HttpServletResponse response) throws IOException {
+	    Boolean forceRebuild = true;
+	    DBTransform.setForceRebuild(forceRebuild);
+	    response.setContentType("text/xml");
+        PrintWriter out = response.getWriter();
+        out.print("<success>");
+        out.print("The style sheet cache has been cleared and they will be reload from the disk.");
+        out.print("</success>");
+        out.close();
+       
+	}
+	
+	/**
+	 * Initialize the configuration status on the http servlet request
+	 * @param request
+	 * @throws GeneralPropertyException
+	 * @throws AdminException
+	 * @throws MetacatUtilException
+	 */
+	private void intitialConfigurationParameters(HttpServletRequest request) throws GeneralPropertyException, AdminException, MetacatUtilException {
+	    if (request != null) {
+	        request.setAttribute("metaCatVersion", SystemUtil.getMetacatVersion()); 
+            request.setAttribute("propsConfigured", new Boolean(PropertyService.arePropertiesConfigured()));
+            request.setAttribute("authConfigured", new Boolean(AuthUtil.isAuthConfigured()));
+            // TODO MCD figure out if we still need an org section
+            //request.setAttribute("orgsConfigured", new Boolean(OrganizationUtil.areOrganizationsConfigured()));
+            request.setAttribute("skinsConfigured", new Boolean(SkinUtil.areSkinsConfigured()));
+            request.setAttribute("metacatConfigured", new Boolean(ConfigurationUtil.isMetacatConfigured()));    
+            request.setAttribute("dataoneConfigured", 
+                    PropertyService.getProperty("configutil.dataoneConfigured"));
+            request.setAttribute("ezidConfigured", 
+                    PropertyService.getProperty("configutil.ezidConfigured"));
+            request.setAttribute("quotaConfigured", 
+                    PropertyService.getProperty("configutil.quotaConfigured"));
+            request.setAttribute("solrserverConfigured", 
+                    PropertyService.getProperty("configutil.solrserverConfigured"));
+            request.setAttribute("metcatServletInitialized", MetaCatServlet.isFullyInitialized());
+            if (PropertyService.arePropertiesConfigured()) {
+                request.setAttribute("databaseVersion", 
+                        DBAdmin.getInstance().getDBVersion());
+                request.setAttribute("contextURL", SystemUtil.getContextURL());
+            }
+	    }
+	}
 }

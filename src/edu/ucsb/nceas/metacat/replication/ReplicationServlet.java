@@ -44,9 +44,11 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.dataone.client.auth.CertificateManager;
 
+import edu.ucsb.nceas.metacat.MetaCatServlet;
 import edu.ucsb.nceas.metacat.service.ServiceService;
 import edu.ucsb.nceas.metacat.shared.ServiceException;
 
@@ -54,8 +56,8 @@ public class ReplicationServlet extends HttpServlet {
 
 	private static final long serialVersionUID = -2898600143193513155L;
 
-	private static Logger logReplication = Logger.getLogger("ReplicationLogging");
-	private static Logger logMetacat = Logger.getLogger(ReplicationServlet.class);
+	private static Log logReplication = LogFactory.getLog("ReplicationLogging");
+	private static Log logMetacat = LogFactory.getLog(ReplicationServlet.class);
 
 	/**
 	 * Initialize the servlet by creating appropriate database connections
@@ -116,7 +118,7 @@ public class ReplicationServlet extends HttpServlet {
 
 			// verify the client certificate on the request
 			boolean isValid = false;
-			String msg = "Client certificate is invalid";
+			String msg = "Metacat received the replication request. However, Metacat can't find the enity of the client certificate or the server parameter on the request url is registered in the xml_replication table. ";
 			try {
 				isValid = hasValidCertificate(request, server);
 			} catch (Exception e) {
@@ -149,20 +151,38 @@ public class ReplicationServlet extends HttpServlet {
 				ReplicationService.handleGetDataFileRequest(outStream, params, response);
 				outStream.close();
 			} else if (action.equals("forcereplicatedatafile")) {
+			    if(MetaCatServlet.isReadOnly(response)) {
+                    return;
+                }
 				//read a specific docid from remote host, and store it into local host
 				ReplicationService.handleForceReplicateDataFileRequest(params, request);
 			} else if (action.equals("forcereplicate")) {
+			    if(MetaCatServlet.isReadOnly(response)) {
+                    return;
+                }
 				// read a specific docid from remote host, and store it into local host
 				ReplicationService.handleForceReplicateRequest(params, response, request);
 			} else if (action.equals("forcereplicatesystemmetadata")) {
+			    if(MetaCatServlet.isReadOnly(response)) {
+                    return;
+                }
 				ReplicationService.handleForceReplicateSystemMetadataRequest(params, response, request);
 			} else if (action.equals(ReplicationService.FORCEREPLICATEDELETE)) {
+			    if(MetaCatServlet.isReadOnly(response)) {
+                    return;
+                }
 				// read a specific docid from remote host, and store it into local host
 				ReplicationService.handleForceReplicateDeleteRequest(params, response, request, false);
 			} else if (action.equals(ReplicationService.FORCEREPLICATEDELETEALL)) {
+			    if(MetaCatServlet.isReadOnly(response)) {
+                    return;
+                }
 				// read a specific docid from remote host, and store it into local host
 				ReplicationService.handleForceReplicateDeleteRequest(params, response, request, true);
 			} else if (action.equals("update")) {
+			    if(MetaCatServlet.isReadOnly(response)) {
+                    return;
+                }
 				// request an update list from the server
 				ReplicationService.handleUpdateRequest(params, response);
 			} else if (action.equals("read")) {
@@ -201,7 +221,7 @@ public class ReplicationServlet extends HttpServlet {
 		X509Certificate certificate = CertificateManager.getInstance().getCertificate(request);
 		if (certificate != null) {
 			String givenSubject = CertificateManager.getInstance().getSubjectDN(certificate);
-			logMetacat.debug("Given certificate subject: " + givenSubject);
+			logMetacat.info("Given client's certificate subject: " + givenSubject);
 
 			// get the CN from the DN:
 			String givenServerCN = null;
@@ -226,6 +246,10 @@ public class ReplicationServlet extends HttpServlet {
 				// match (ends with) same certificate name (domain)?
 				return serverHost.endsWith(givenServerCN);
 			}
+		} else {
+		    String error = "ReplicationServlet.hasValidCertifcate - the client certificate is null. This means somehow the client certificate wasn't passed to Metacat!";
+		    logMetacat.error(error);
+		    throw new ServiceException(error);
 		}
  		return false;
 	}

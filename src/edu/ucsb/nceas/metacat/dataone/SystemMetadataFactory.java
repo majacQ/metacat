@@ -31,6 +31,8 @@ import java.io.InputStream;
 import java.math.BigInteger;
 import java.net.URL;
 import java.net.URLConnection;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -42,20 +44,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.Vector;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.xpath.XPathExpressionException;
 
 import org.apache.commons.beanutils.BeanUtils;
 import org.apache.commons.io.IOUtils;
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.wicket.protocol.http.mock.MockHttpServletRequest;
-import org.dataone.client.ObjectFormatCache;
+import org.dataone.client.v2.formats.ObjectFormatCache;
+import org.dataone.configuration.Settings;
 import org.dataone.eml.DataoneEMLParser;
 import org.dataone.eml.EMLDocument;
 import org.dataone.eml.EMLDocument.DistributionMetadata;
+import org.dataone.exceptions.MarshallingException;
 import org.dataone.ore.ResourceMapFactory;
 import org.dataone.service.exceptions.BaseException;
+import org.dataone.service.exceptions.InvalidRequest;
+import org.dataone.service.exceptions.InvalidToken;
+import org.dataone.service.exceptions.NotAuthorized;
 import org.dataone.service.exceptions.NotFound;
+import org.dataone.service.exceptions.NotImplemented;
+import org.dataone.service.exceptions.ServiceFailure;
 import org.dataone.service.types.v1.AccessPolicy;
 import org.dataone.service.types.v1.AccessRule;
 import org.dataone.service.types.v1.Checksum;
@@ -65,11 +76,10 @@ import org.dataone.service.types.v1.ObjectFormatIdentifier;
 import org.dataone.service.types.v1.ReplicationPolicy;
 import org.dataone.service.types.v1.Session;
 import org.dataone.service.types.v1.Subject;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.dataone.service.types.v2.SystemMetadata;
 import org.dataone.service.types.v1.util.ChecksumUtil;
 import org.dataone.service.util.DateTimeMarshaller;
 import org.dspace.foresite.ResourceMap;
-import org.jibx.runtime.JiBXException;
 import org.xml.sax.SAXException;
 
 import java.util.Calendar;
@@ -86,6 +96,7 @@ import edu.ucsb.nceas.metacat.MetacatHandler;
 import edu.ucsb.nceas.metacat.accesscontrol.AccessControlException;
 import edu.ucsb.nceas.metacat.client.InsufficientKarmaException;
 import edu.ucsb.nceas.metacat.dataone.hazelcast.HazelcastService;
+import edu.ucsb.nceas.metacat.index.MetacatSolrIndex;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.replication.ReplicationService;
 import edu.ucsb.nceas.metacat.shared.AccessException;
@@ -97,14 +108,52 @@ import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 public class SystemMetadataFactory {
 
 	public static final String RESOURCE_MAP_PREFIX = "resourceMap_";
-	private static Logger logMetacat = Logger.getLogger(SystemMetadataFactory.class);
+	private static Log logMetacat = LogFactory.getLog(SystemMetadataFactory.class);
+	private static int waitingTime = Settings.getConfiguration().getInt("index.resourcemap.waitingComponent.time", 100);
+    private static int maxAttempts = Settings.getConfiguration().getInt("index.resourcemap.waitingComponent.max.attempts", 5);
 	/**
 	 * use this flag if you want to update any existing system metadata values with generated content
 	 */
 	private static boolean updateExisting = true;
 	
+	
+	
+	/**
+	 * Create a system metadata object for insertion into metacat
+	 * @param localId
+	 * @param includeORE
+	 * @param downloadData
+	 * @return
+	 * @throws McdbException
+	 * @throws McdbDocNotFoundException
+	 * @throws SQLException
+	 * @throws IOException
+	 * @throws AccessionNumberException
+	 * @throws ClassNotFoundException
+	 * @throws InsufficientKarmaException
+	 * @throws ParseLSIDException
+	 * @throws PropertyNotFoundException
+	 * @throws BaseException
+	 * @throws NoSuchAlgorithmException
+	 * @throws MarshallingException
+	 * @throws AccessControlException
+	 * @throws HandlerException
+	 * @throws SAXException
+	 * @throws AccessException
+	 */
+	public static SystemMetadata createSystemMetadata(String localId, boolean includeORE, boolean downloadData)
+            throws McdbException, McdbDocNotFoundException, SQLException,
+            IOException, AccessionNumberException, ClassNotFoundException,
+            InsufficientKarmaException, ParseLSIDException,
+            PropertyNotFoundException, BaseException, NoSuchAlgorithmException,
+            MarshallingException, AccessControlException, HandlerException, SAXException, AccessException {
+	        boolean indexDataFile = false;
+	        return createSystemMetadata(indexDataFile, localId, includeORE, downloadData);
+	}
 	/**
 	 * Creates a system metadata object for insertion into metacat
+	 * @param indexDataFile
+	 *            Indicate if we need to index data file.
 	 * 
 	 * @param localId
 	 *            The local document identifier
@@ -119,12 +168,12 @@ public class SystemMetadataFactory {
 	 * @throws AccessControlException 
 	 * @throws AccessException 
 	 */
-	public static SystemMetadata createSystemMetadata(String localId, boolean includeORE, boolean downloadData)
+	public static SystemMetadata createSystemMetadata(boolean indexDataFile, String localId, boolean includeORE, boolean downloadData)
 			throws McdbException, McdbDocNotFoundException, SQLException,
 			IOException, AccessionNumberException, ClassNotFoundException,
 			InsufficientKarmaException, ParseLSIDException,
 			PropertyNotFoundException, BaseException, NoSuchAlgorithmException,
-			JiBXException, AccessControlException, HandlerException, SAXException, AccessException {
+			MarshallingException, AccessControlException, HandlerException, SAXException, AccessException {
 		
 		logMetacat.debug("createSystemMetadata() called for localId " + localId);
 
@@ -291,7 +340,8 @@ public class SystemMetadataFactory {
 			}
 			if (obsoletesSysMeta != null) {
 				obsoletesSysMeta.setObsoletedBy(identifier);
-				obsoletesSysMeta.setArchived(true);
+				// DO NOT set archived to true -- it will have unintended consequences if the CN sees this.
+				//obsoletesSysMeta.setArchived(true);
 				obsoletesSysMeta.setDateSysMetadataModified(Calendar.getInstance().getTime());
 				HazelcastService.getInstance().getSystemMetadataMap().put(obsoletes, obsoletesSysMeta);
 			}
@@ -331,10 +381,14 @@ public class SystemMetadataFactory {
 				|| fmtid == ObjectFormatCache.getInstance().getFormat(
 						"eml://ecoinformatics.org/eml-2.1.0").getFormatId()
 				|| fmtid == ObjectFormatCache.getInstance().getFormat(
-						"eml://ecoinformatics.org/eml-2.1.1").getFormatId()) {
+						"eml://ecoinformatics.org/eml-2.1.1").getFormatId()
+				|| fmtid == ObjectFormatCache.getInstance().getFormat(
+                        "https://eml.ecoinformatics.org/eml-2.2.0").getFormatId()) {
 
 			try {
-				
+			    Session session = new Session();
+                session.setSubject(submitter);
+                MockHttpServletRequest request = new MockHttpServletRequest(null, null, null);
 				// get it again to parse the document
 				logMetacat.debug("Re-reading document inputStream");
 				inputStream = MetacatHandler.read(localId);
@@ -416,10 +470,8 @@ public class SystemMetadataFactory {
 									dataGuid.setValue(dataDocLocalId);
 									
 									// save it locally
-									Session session = new Session();
-									session.setSubject(submitter);
-									MockHttpServletRequest request = new MockHttpServletRequest(null, null, null);
-									MNodeService.getInstance(request).insertDataObject(dataObject, dataGuid, session);
+									Checksum sum = null;
+									MNodeService.getInstance(request).insertDataObject(dataObject, dataGuid, session, sum);
 									
 									remoteData = true;
 								}
@@ -506,6 +558,12 @@ public class SystemMetadataFactory {
 							// update the values
 							HazelcastService.getInstance().getSystemMetadataMap().put(dataSysMeta.getIdentifier(), dataSysMeta);
 							
+							// reindex data file if need it.
+							logMetacat.debug("do we need to reindex guid "+dataGuid.getValue()+"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~?"+indexDataFile);
+							if(indexDataFile) {
+							    reindexDataFile(dataSysMeta.getIdentifier(), dataSysMeta, session, request);
+							}
+
 							// include as part of the ORE package
 							dataIds.add(dataGuid);
 	
@@ -552,7 +610,7 @@ public class SystemMetadataFactory {
 								SystemMetadata resourceMapObsoletesSystemMetadata = HazelcastService.getInstance().getSystemMetadataMap().get(resourceMapObsoletes);
 								if (resourceMapObsoletesSystemMetadata != null) {
 									resourceMapObsoletesSystemMetadata.setObsoletedBy(resourceMapId);
-									resourceMapObsoletesSystemMetadata.setArchived(true);
+									//resourceMapObsoletesSystemMetadata.setArchived(true);
 									HazelcastService.getInstance().getSystemMetadataMap().put(resourceMapObsoletes, resourceMapObsoletesSystemMetadata);
 								}
 							}
@@ -563,7 +621,7 @@ public class SystemMetadataFactory {
 								Identifier resourceMapObsoletedBy = new Identifier();
 								resourceMapObsoletedBy.setValue(RESOURCE_MAP_PREFIX + obsoletedByLocalId);
 								resourceMapSysMeta.setObsoletedBy(resourceMapObsoletedBy);
-								resourceMapSysMeta.setArchived(true);
+								//resourceMapSysMeta.setArchived(true);
 								SystemMetadata resourceMapObsoletedBySystemMetadata = HazelcastService.getInstance().getSystemMetadataMap().get(resourceMapObsoletedBy);
 								if (resourceMapObsoletedBySystemMetadata != null) {
 									resourceMapObsoletedBySystemMetadata.setObsoletes(resourceMapId);
@@ -573,11 +631,9 @@ public class SystemMetadataFactory {
 				            
 							// save it locally, if it doesn't already exist
 							if (!IdentifierManager.getInstance().identifierExists(resourceMapId.getValue())) {
-								Session session = new Session();
-								session.setSubject(submitter);
-								MockHttpServletRequest request = new MockHttpServletRequest(null, null, null);
-								MNodeService.getInstance(request).insertDataObject(IOUtils.toInputStream(resourceMapXML, MetaCatServlet.DEFAULT_ENCODING), resourceMapId, session);
-								MNodeService.getInstance(request).insertSystemMetadata(resourceMapSysMeta);
+								MNodeService.getInstance(request).insertDataObject(IOUtils.toInputStream(resourceMapXML, MetaCatServlet.DEFAULT_ENCODING), resourceMapId, session, resourceMapSysMeta.getChecksum());
+								//MNodeService.getInstance(request).insertSystemMetadata(resourceMapSysMeta);
+								HazelcastService.getInstance().getSystemMetadataMap().put(resourceMapId, resourceMapSysMeta);
 								logMetacat.info("Inserted ORE package: " + resourceMapId.getValue());
 							}
 			        	}
@@ -605,6 +661,64 @@ public class SystemMetadataFactory {
 
 		return sysMeta;
 	}
+	
+	/*
+	 * Re-index the data file since the access rule was changed during the inserting of the eml document.
+	 * (During first time to index the data file in Metacat API, the eml hasn't been inserted)
+	 */
+	private static void reindexDataFile(Identifier id, SystemMetadata sysmeta, Session session, HttpServletRequest request) {
+	    try {
+	        logMetacat.debug("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ reindex"+id.getValue());
+	        if(sysmeta != null) {
+	            for (int i=0; i<maxAttempts; i++) {
+	                try {
+	                    boolean exists = solrDocExists(id.getValue(), session, request);
+	                    if (exists) {
+	                        break;
+	                    }
+                        Thread.sleep(waitingTime);
+	                } catch (Exception ee) {
+	                    logMetacat.warn("Can't get the solr doc for  " + id.getValue() + " since " + ee.getMessage());
+	                    Thread.sleep(waitingTime);
+	                } 
+	            }
+	            MetacatSolrIndex.getInstance().submit(id, sysmeta, null, false);
+	        }
+	       
+        } catch (Exception e) {
+            // TODO Auto-generated catch block
+            logMetacat.warn("Can't reindex the data object "+id.getValue()+" since "+e.getMessage());
+            //e.printStackTrace();
+        }
+	}
+	
+	/**
+	 * Check if the the solr doc for the given id exists.
+	 * @param id
+	 * @param session
+	 * @param request
+	 * @return
+	 * @throws InvalidToken
+	 * @throws ServiceFailure
+	 * @throws NotAuthorized
+	 * @throws InvalidRequest
+	 * @throws NotImplemented
+	 * @throws NotFound
+	 * @throws IOException
+	 */
+	private static boolean solrDocExists(String id, Session session, HttpServletRequest request) throws InvalidToken, 
+	                                            ServiceFailure, NotAuthorized, InvalidRequest, NotImplemented, NotFound, IOException {
+	    boolean exists = false;
+	    String query = "q=id:" + URLEncoder.encode(id, StandardCharsets.UTF_8.toString());
+	    logMetacat.debug("SystemMetadataFactory.solrDocExist - the solr query is " + query);
+	    InputStream response = MNodeService.getInstance(request).query(session, "solr", query);
+	    String result = IOUtils.toString(response);
+	    logMetacat.debug("SystemMetadataFactory.solrDocExist - the response from the solr query is " + result);
+	    if (result != null && result.contains("checksumAlgorithm")) {
+	        exists = true;
+	    }
+	    return exists;
+    }
 
 	/**
 	 * Checks for potential ORE object existence 
@@ -613,7 +727,7 @@ public class SystemMetadataFactory {
 	 */
     public static boolean oreExistsFor(Identifier identifier) {
     	MockHttpServletRequest request = new MockHttpServletRequest(null, null, null);
-		List<Identifier> ids = MNodeService.getInstance(request).lookupOreFor(identifier, true);
+		List<Identifier> ids = MNodeService.getInstance(request).lookupOreFor(null, identifier, true);
 		return (ids != null && ids.size() > 0);
 	}
 
@@ -631,7 +745,7 @@ public class SystemMetadataFactory {
      * @throws SQLException
 	 * @throws SAXException 
 	 * @throws HandlerException 
-	 * @throws JiBXException 
+	 * @throws MarshallingException 
 	 * @throws BaseException 
 	 * @throws ParseLSIDException 
 	 * @throws InsufficientKarmaException 
@@ -642,7 +756,7 @@ public class SystemMetadataFactory {
 	 * @throws AccessControlException 
      */
     public static void generateSystemMetadata(List<String> idList, boolean includeOre, boolean downloadData) 
-    throws PropertyNotFoundException, NoSuchAlgorithmException, AccessionNumberException, SQLException, AccessControlException, AccessException, McdbException, IOException, ClassNotFoundException, InsufficientKarmaException, ParseLSIDException, BaseException, JiBXException, HandlerException, SAXException 
+    throws PropertyNotFoundException, NoSuchAlgorithmException, AccessionNumberException, SQLException, AccessControlException, AccessException, McdbException, IOException, ClassNotFoundException, InsufficientKarmaException, ParseLSIDException, BaseException, MarshallingException, HandlerException, SAXException 
     {
         
         for (String localId : idList) { 
@@ -722,21 +836,21 @@ public class SystemMetadataFactory {
 	 * than or equal to zero, no policy needs to be set, so return null.
 	 * @return ReplicationPolicy, or null if no replication policy is needed
 	 */
-    private static ReplicationPolicy getDefaultReplicationPolicy() {
+    protected static ReplicationPolicy getDefaultReplicationPolicy() {
         ReplicationPolicy rp = null;
         int numReplicas = -1;
         try {
             numReplicas = new Integer(PropertyService.getProperty("dataone.replicationpolicy.default.numreplicas"));
         } catch (NumberFormatException e) {
-            // The property is not a valid integer, so return a null policy
-            return null;
+            // The property is not a valid integer, so set it to 0
+            numReplicas = 0;
         } catch (PropertyNotFoundException e) {
-            // The property is not found, so return a null policy
-            return null;
+            // The property is not found, so set it to 0
+            numReplicas = 0;
         }
         
+        rp = new ReplicationPolicy();
         if (numReplicas > 0) {
-            rp = new ReplicationPolicy();
             rp.setReplicationAllowed(true);
             rp.setNumberReplicas(numReplicas);
             try {
@@ -761,6 +875,9 @@ public class SystemMetadataFactory {
             } catch (PropertyNotFoundException e) {
                 // No blocked list found in properties, so just ignore it; no action needed
             }
+        } else {
+            rp.setReplicationAllowed(false);
+            rp.setNumberReplicas(0);
         }
         return rp;
     }

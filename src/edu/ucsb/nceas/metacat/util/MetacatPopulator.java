@@ -39,9 +39,9 @@ import java.util.Map;
 import java.util.Vector;
 
 import org.apache.commons.io.IOUtils;
-import org.dataone.client.D1Client;
-import org.dataone.client.MNode;
-import org.dataone.client.ObjectFormatCache;
+import org.dataone.client.v2.itk.D1Client;
+import org.dataone.client.v2.MNode;
+import org.dataone.client.v2.formats.ObjectFormatCache;
 import org.dataone.client.auth.CertificateManager;
 import org.dataone.ore.ResourceMapFactory;
 import org.dataone.service.exceptions.NotFound;
@@ -54,7 +54,7 @@ import org.dataone.service.types.v1.ObjectFormat;
 import org.dataone.service.types.v1.Permission;
 import org.dataone.service.types.v1.Session;
 import org.dataone.service.types.v1.Subject;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.dataone.service.types.v2.SystemMetadata;
 import org.dataone.service.types.v1.util.ChecksumUtil;
 import org.dataone.service.util.Constants;
 import org.dspace.foresite.ResourceMap;
@@ -114,7 +114,8 @@ public class MetacatPopulator
         //do a query
         String params = "returndoctype=eml://ecoinformatics.org/eml-2.1.0&" +
                         "returndoctype=eml://ecoinformatics.org/eml-2.0.1&" +
-                        "returndoctype=eml://ecoinformatics.org/eml-2.0.0&";
+                        "returndoctype=eml://ecoinformatics.org/eml-2.0.0&" +
+                        "returndoctype=https://eml.ecoinformatics.org/eml-2.2.0&";
         params += "action=query&";
         params += "qformat=xml&";
         params += "anyfield=" + query;

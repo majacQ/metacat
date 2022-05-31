@@ -34,7 +34,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
 import org.xml.sax.ContentHandler;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.InputSource;
@@ -68,7 +70,7 @@ public class AccessControlForSingleFile implements AccessControlInterface
 
   private String _guid;
   
-  private Logger logMetacat = Logger.getLogger(AccessControlForSingleFile.class);
+  private Log logMetacat = LogFactory.getLog(AccessControlForSingleFile.class);
  
     /**
 	 * Construct an instance of the AccessControlForSingleFile class.  This
@@ -373,6 +375,8 @@ public class AccessControlForSingleFile implements AccessControlInterface
 			docid = IdentifierManager.getInstance().getLocalId(_guid);
 		} catch (McdbDocNotFoundException e) {
 			logMetacat.warn("Could not lookup docid for guid, defaulting to guid: " + _guid, e);
+		} catch (SQLException e){
+		    throw new AccessControlException("Couldn't identify the local id of the object with the specified identifier "+_guid+" since "+e.getMessage());
 		}
 
 		output.append("<access authSystem=\"knb\" order=\"" + permOrder + "\" id=\"" + docid + "\" scope=\"document\"");

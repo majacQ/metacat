@@ -27,7 +27,8 @@
 
 package edu.ucsb.nceas.metacat;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.xml.sax.*;
 import org.xml.sax.helpers.DefaultHandler;
 
@@ -63,7 +64,7 @@ public class DBEntityResolver implements EntityResolver
   private String doctype = null;
   private String systemid = null;
   private Reader dtdtext = null;
-  private static Logger logMetacat = Logger.getLogger(DBEntityResolver.class);
+  private static Log logMetacat = LogFactory.getLog(DBEntityResolver.class);
   
   /**
    * Construct an instance of the DBEntityResolver class
@@ -97,40 +98,71 @@ public class DBEntityResolver implements EntityResolver
   public InputSource resolveEntity (String publicId, String systemId)
                      throws SAXException
   {
-    logMetacat.debug("DBEntityResolver.resolveEntity - in resolveEntity");
+    InputSource dtdSource= null;
+    logMetacat.debug("DBEntityResolver.resolveEntity - in resolveEntity "+" the public id is "+publicId+" and systemId is "+systemId);
     String dbSystemID;
     String doctype = null;
 
     // Won't have a handler under all cases
     if ( handler != null ) {
+        String message = "Metacat can't determine the public id or the name of the root element of the document, so the validation can't be applied and the document is rejected";
+        logMetacat.debug("DBEntityResolver.resolveEntity - the handler class is "+handler.getClass().getCanonicalName());
       if ( handler instanceof DBSAXHandler ) {
         DBSAXHandler dhandler = null;
         dhandler = (DBSAXHandler)handler;
         if ( dhandler.processingDTD() ) {
-         
+            logMetacat.debug("DBEntityResolver.resolveEntity - in the branch of the handler class is  DBSAXHandler");
           // public ID is doctype
           if (publicId != null) {
             doctype = publicId;
-            logMetacat.debug("DBEntityResolver.resolveEntity - in get type from publicId and doctype is: "
+            logMetacat.debug("DBEntityResolver.resolveEntity - the publicId is not null, so the publicId is the doctype. The doctype is: "
                                      + doctype);
           // assume public ID (doctype) is docname
-          } else if (systemId != null) {
+          } else {
             doctype = dhandler.getDocname();
+            logMetacat.debug("DBEntityResolver.resolveEntity - the publicId is null and we treat the doc name(the root element name) as the doc type. The doctype is: "
+                    + doctype);
+          }
+          
+          if(doctype == null || doctype.trim().equals("")) {
+              //we can't determine the public id or the name of the root element in for this dtd defined xml document
+              logMetacat.error("DBEntityResolver.resolveEntity - "+message);
+              throw new SAXException(message);
+          } else {
+              logMetacat.debug("DBEntityResolver.resolveEntity - the final doctype for DBSAXHandler "+doctype);
           }
         }
       } else if ( handler instanceof AccessControlList ) {
+          logMetacat.debug("DBEntityResolver.resolveEntity - in the branch of the handler class is AccessControlList");
         AccessControlList ahandler = null;
         ahandler = (AccessControlList)handler;
-        //if ( ahandler.processingDTD() ) {
+        if ( ahandler.processingDTD() ) {
           // public ID is doctype
           if (publicId != null) {
             doctype = publicId;
+            logMetacat.debug("DBEntityResolver.resolveEntity - the publicId is not null, so the publicId is the doctype. The doctype in AccessControlList is: "
+                    + doctype);
           // assume public ID (doctype) is docname
-          } else if (systemId != null) {
+          } else {
             doctype = ahandler.getDocname();
+            logMetacat.debug("DBEntityResolver.resolveEntity - the publicId is null and we treat the doc name(the root element name) as the doc type. The doctype in AccessControlList is: "
+                    + doctype);
           }
-        //}
+          if(doctype == null || doctype.trim().equals("")) {
+              //we can't determine the public id or the name of the root element in for this dtd defined xml document
+              logMetacat.error("DBEntityResolver.resolveEntity - "+message);
+              throw new SAXException(message);
+          } else {
+              logMetacat.debug("DBEntityResolver.resolveEntity - the final doctype for AccessControList "+doctype);
+          }
+        } else {
+            logMetacat.debug("DBEntityResolver.resolveEntity - the method resolverEntity for the AccessControList class is not processing a dtd");
+        }
+      } else {
+          logMetacat.debug("DBEntityResolver.resolveEntity - in the branch of the other handler class");
       }
+    } else {
+        logMetacat.debug("DBEntityResolver.resolveEntity - the xml handler is null. So we can't find the doctype.");
     }
 
     // get System ID for doctype
@@ -138,15 +170,22 @@ public class DBEntityResolver implements EntityResolver
       // look at db XML Catalog for System ID
       logMetacat.info("DBEntityResolver.resolveEntity - get systemId from doctype: " + doctype);
       dbSystemID = getDTDSystemID(doctype);
-      logMetacat.info("DBEntityResolver.resolveEntity - The Systemid is: " + dbSystemID);
+      logMetacat.info("DBEntityResolver.resolveEntity - The Systemid from xml_catalog table is: " + dbSystemID);
+      if(dbSystemID == null) {
+          logMetacat.error("DBEntityResolver.resolveEntity - "+"The doctype: "+doctype+" , which was defined by a DTD document, isn't registered in Metacat. Please contact the operator of the Metacat");
+          throw new SAXException("The doctype: "+doctype+" , which was defined by a DTD document, isn't registered in Metacat. Please contact the operator of the Metacat");
+      }
       // check that it is accessible on our system before getting too far
       try {
     	  InputStream in = checkURLConnection(dbSystemID);
+    	  dtdSource = new InputSource(in);
 	  } catch (SAXException se) {
+	      se.printStackTrace();
+	      throw se;
 		  // after an upgrade, the dtd will not exist on disk, but it is in xml catalog.  The db system id may be pointing 
 		  // back at this system  Try and download it from the original system id and see if we still have a problem
 		  // checking the URL connection.
-		  logMetacat.warn("DBEntityResolver.resolveEntity - Problem when checking URL Connection: " + se.getMessage());
+		  /*logMetacat.warn("DBEntityResolver.resolveEntity - Problem when checking URL Connection: " + se.getMessage());
 		  logMetacat.warn("DBEntityResolver.resolveEntity - Probably, dtd for doc type " + doctype + " existed in xml catalog, but not on disk.  Uploading from: " + systemId);
 		  InputStream istream = checkURLConnection(systemId);
 		  uploadDTDFromURL(istream, systemId);
@@ -157,9 +196,9 @@ public class DBEntityResolver implements EntityResolver
 			  logMetacat.error("DBEntityResolver.resolveEntity - still could not find dtd for doc type " + doctype + " at " 
 					  + dbSystemID + " : " + e2.getMessage());
 			  dbSystemID = null;
-		  }
+		  }*/
 	  } 
-      boolean doctypeIsInDB = true;
+      /*boolean doctypeIsInDB = true;
       // no System ID found in db XML Catalog
       if (dbSystemID == null) {
         doctypeIsInDB = false;
@@ -198,14 +237,13 @@ public class DBEntityResolver implements EntityResolver
       }
       istream = checkURLConnection(dbSystemID);
       is.setByteStream(istream);
-      return is;
+      return is;*/
     } else {
-      // use provided systemId for the other cases
-      logMetacat.info("DBEntityResolver.resolveEntity - doctype is null and using system id from file");
-      InputStream istream = checkURLConnection(systemId);
-      return null;
-
+    
+      //InputStream istream = checkURLConnection(systemId);
+      //return null;
     }
+    return dtdSource;
 
   }
 
@@ -213,13 +251,14 @@ public class DBEntityResolver implements EntityResolver
    * Look at db XML Catalog to get System ID (if any) for @doctype.
    * Return null if there are no System ID found for @doctype
    */
-  public static String getDTDSystemID( String doctype )
+  private static String getDTDSystemID( String doctype )
                  throws SAXException
   {
     String systemid = null;
     PreparedStatement pstmt = null;
     DBConnection conn = null;
     int serialNumber = -1;
+    ResultSet rs = null;
     try {
       //check out DBConnection
       conn=DBConnectionPool.getDBConnection("DBEntityResolver.getDTDSystemID");
@@ -232,16 +271,16 @@ public class DBEntityResolver implements EntityResolver
       pstmt.setString(1, doctype);
       
       pstmt.execute();
-      ResultSet rs = pstmt.getResultSet();
+      rs = pstmt.getResultSet();
       boolean tableHasRows = rs.next();
       if (tableHasRows) {
         systemid = rs.getString(1);
         // system id may not have server url on front.  Add it if not.
         if (!systemid.startsWith("http://")) {
-        	systemid = SystemUtil.getContextURL() + systemid;
+        	systemid = SystemUtil.getInternalContextURL() + systemid;
         }
       }
-      pstmt.close();
+      //pstmt.close();
     } catch (SQLException e) {
       throw new SAXException
       ("DBEntityResolver.getDTDSystemID - SQL error when getting DTD system ID: " + e.getMessage());
@@ -253,7 +292,13 @@ public class DBEntityResolver implements EntityResolver
     {
       try
       {
-        pstmt.close();
+          if(rs != null) {
+              rs.close();
+          }
+          if(pstmt != null) {
+              pstmt.close();
+          }
+        
       }//try
       catch (SQLException sqlE)
       {
@@ -273,7 +318,7 @@ public class DBEntityResolver implements EntityResolver
    * Register new DTD identified by @systemId in Metacat XML Catalog
    * . make a reference with @systemId for @doctype in Metacat DB
    */
-  private void registerDTD ( String doctype, String systemId )
+  /*private void registerDTD ( String doctype, String systemId )
                  throws SAXException
   {
 	  String existingSystemId = getDTDSystemID(doctype);
@@ -322,14 +367,14 @@ public class DBEntityResolver implements EntityResolver
       //DBConnectionPool.returnDBConnection(conn, serialNumber);
     }//finally
 
-  }
+  }*/
 
   /**
 	 * Upload new DTD text identified by
 	 * 
 	 * @systemId to Metacat file system
 	 */
-	private String uploadDTD(String systemId) throws SAXException {
+	/*private String uploadDTD(String systemId) throws SAXException {
 		String dtdPath = null;
 		String dtdURL = null;
 		try {
@@ -398,13 +443,13 @@ public class DBEntityResolver implements EntityResolver
 
 		// String dtdURL = "http://dev.nceas.ucsb.edu/bojilova/dtd/";
 		return dtdURL + filename;
-	}
+	}*/
 
 
   /**
 	 * Upload new DTD located at outside URL to Metacat file system
 	 */
-	private String uploadDTDFromURL(InputStream istream, String systemId)
+	/*private String uploadDTDFromURL(InputStream istream, String systemId)
 			throws SAXException {
 		String dtdPath = null;
 		String dtdURL = null;
@@ -479,7 +524,7 @@ public class DBEntityResolver implements EntityResolver
 
 		//String dtdURL = "http://dev.nceas.ucsb.edu/bojilova/dtd/";
 		return dtdURL + filename;
-	}
+	}*/
 
 	/**
 	 * Check URL Connection for @systemId, and return an InputStream

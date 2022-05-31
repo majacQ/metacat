@@ -43,7 +43,8 @@ Index configuration
 ----------------------------
 Metacat-index is deployed as a separate web application (metacat-index.war) and should be deployed 
 as a sibling of the Metacat webapp (metacat.war). Deploying metacat-index.war is only required when SOLR support
-is desired and can safely be omitted if it will not be utilized for any given Metacat deployment.
+is desired (e.g., for MetacatUI) and can safely be omitted if it will not be utilized for any given Metacat deployment.
+
 
 During the initial installation/upgrade, an empty index will be initialized in the configured "solr-home" location.
 Metacat-index will index all the existing Metacat content when the webapp next initializes.
@@ -79,22 +80,13 @@ authenticated. Both certificate-based (DataONE API) and JSESSIONID-based (Metaca
 authentication are simultaneously supported.
 
 
-Regenerating the index from scratch
------------------------------------
+Regenerating the index
+----------------------
 When the SOLR index has been drastically modified, a complete regeneration of the 
 index may be necessary. In order to accomplish this:
 
-Step-by-step instructions:
-
-1. Entirely remove the solr-home directory
-2. Step through the Metacat admin interface main properties screen, specifying the solr-home directory you wish to use
-3. Restart the webapp container (Tomcat).
-
-Content can also be submitted for index regeneration by using the the Metacat API:
-
 1. Login as the Metacat administrator
-2. Navigate to: <host>/<metacat_context>/metacat?action=reindex[&pid={pid}]
-3. If the pid parameter is omitted, all objects in Metacat will be submitted for reindexing.
+2. Navigate to: <host>/<metacat_context>/metacat?action=reindexall
 
 
 

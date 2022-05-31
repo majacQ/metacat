@@ -1,3 +1,6 @@
+.. _Solr installation page: ./install.html#solr-server
+
+
 Configuring Metacat
 ===================
 
@@ -45,9 +48,11 @@ does not know where this external directory is, Metacat uses a discovery
 algorithm to locate it. If Metacat cannot identify a backup directory, you will 
 see the Backup Directory Configuration screen.
 
-NOTE: If the metacat.properties file has many custom settings, it should be manually 
-backed up before any Metacat upgrade as deploying a new Metacat war file will overwrite
-the existing file.
+.. Note:: 
+  
+  If the metacat.properties file has many custom settings, it should be manually 
+  backed up before any Metacat upgrade as deploying a new Metacat war file will overwrite
+  the existing file.
 
 .. figure:: images/screenshots/image011.png
    :align: center
@@ -62,25 +67,56 @@ reach the Authentication Configuration page from a running Metacat by typing::
   
   http://<your_context_url>/admin
 
-Metacat uses LDAP as its primary authentication mechanism, but you can define 
-your own authentication mechanism by creating a Java class that implements 
-``AuthInterface``. Required configuration values are: Authentication Class, 
-Authentication URL, Authentication Secure URL, and Metacat Administrators. 
+Metacat uses either an internal password file or LDAP as its authentication mechanism.
+You can choose the authentication mechanism by selecting either AuthFile or AuthLdap class.
+We will only allow trusted partners to access the NCEAS LDAP server to ensure the security of our user base.
+If you are not in the trusted partner list, you may choose the internal password file authentication 
+or set up your own LDAP server. You also can define your own authentication mechanism by creating a Java 
+class that implements ``AuthInterface``.
+
+Required configuration values for the password file authentication are:
+
+  ::
+   
+    Authentication Class
+    Metacat Administrators
+    Users Management URL
+    Password File Path.
+
+Required configuration values for LDAP authentication are:
+
+  ::
+   
+    Authentication Class
+    Metacat Administrators
+    Users Management URL
+    Authentication URL
+    Authentication Secure URL. 
+
+
 Make sure that your user account information is entered into the Metacat 
 Administrators field (e.g., uid=daigle,o=nceas,dc=ecoinformatics,dc=org). You 
-will not be allowed to continue with configuration if this is missing. 
+will not be allowed to continue with configuration if this is missing. Multiple 
+accounts can be entered, separated by the colon (:) character.
 
-NOTE: To create an LDAP account on the KNB LDAP server (specified as the 
-default LDAP server), go to http://knb.ecoinformatics.org and select the 
-"create a new user account" link.
+.. Note:: 
+  
+  To create an account on the password file, please see the section called :doc:`authinterface`.
+  To create an LDAP account on the KNB LDAP server (specified as the default LDAP server), 
+  go to https://identity.nceas.ucsb.edu and select the "create a new user account" link.
 
 If you make changes to the authentication settings, you must restart Tomcat to 
 put them into effect.
 
+.. figure:: images/screenshots/image071.png
+   :align: center
+
+   Configuring Password File Authentication Values.
+
 .. figure:: images/screenshots/image009.png
    :align: center
 
-   Configuring Authentication Values.
+   Configuring LDAP Authentication Values.
 
 Changing Authentication Configuration without Authentication
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -108,6 +144,7 @@ To edit the authentication configuration file:
     auth.administrators - a colon separated list of administrators 
     auth.url - the authentication server URL 
     auth.surl - the authentication secure server URL
+    auth.file.path  - the authentication password file path
 
 3. Save the ``metacat.properties`` file and start Tomcat.
 
@@ -192,8 +229,7 @@ property is also included in the :doc:`metacat-properties`.
    The Metacat Global Properties editing screen.
    
 When you save global properties, Metacat also saves a back-up file that is 
-located in ``/var/metacat/.metacat`` (on Linux) or 
-``C:\Program Files\metacat\.metacat`` (on Windows). When you update Metacat, 
+located in ``/var/metacat/.metacat`` (on Linux). When you update Metacat, 
 the system automatically locates the back-up file so you do not have to re-enter 
 the configuration settings.
 
@@ -212,6 +248,14 @@ HTTP Port         The non-secure port where Metacat will be available.
 HTTP SSL Port     The secure port where Metacat will be available. 
 Deploy Location   The directory where the application is deployed. 
 ================  ============================================================
+
+.. Note:: 
+
+  The Solr Home directory you choose should be writable/readable by the user solr.
+  
+  The Environment Overwrites File should be writable/readable by the user tomcat8.
+  
+  The section of Tomcat And Solr User Management on the `Solr installation page`_ will resolve this issue.
 
 Authentication Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -271,11 +315,6 @@ Select the checkbox next to your customized skin or and click the
 select the ``default`` skin. Once you have selected a skin, Metacat will open 
 a list of options that apply to the Registry interface.
 
-.. figure:: images/screenshots/image025.png
-   :align: center
-
-   Configuring Metacat skins.
-
 Select the lists and modules that you would like to appear in the Registry 
 form-interface by checking the box beside each. When you save the configuration, 
 the customized interface will appear to site visitors.
@@ -327,10 +366,39 @@ scripts and updates the database schema.
 Additional upgrade tasks may also run after the database upgrade is complete.
 For systems hosting large amounts of data, these upgrade routines can take time to complete.
 It is important to let the process complete before using Metacat otherwise your deployment may become unstable.
-   
 
-Geoserver Configuration (Highly Recommended)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Solr Server Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Because the Solr Server Configuration is dependent on values specified in the 
+Global Properties section, the link to these settings does not become active 
+until after the global settings have been saved. Once the global settings have 
+been saved, Metacat automatically detects the status of the Solr Core and creates 
+or upgrades it if necessary (and with your permission). 
+
+
+.. figure:: images/screenshots/image073.png
+   :align: center
+
+.. Note:: 
+
+  Solr server should be running when you configure Metacat.
+   
+Troubleshooting
+...............
+If you click the Solr Configuration button and get the error message like 
+``Server refused connection at: http://localhost:8983/solr``, this means the 
+Solr server is not running and you need to start it.
+
+If you click the Create button to create the Solr core and get an error message 
+like ``Couldn't persist core properties to /var/metacat/solr-home2/``, this means 
+the solr user doesn't have the write permission to the Solr Home directory. You need
+to add the solr user to the tomcat group, restart Solr server and Tomcat, log in again
+and continue to configure Metacat. The instructions for adding users to groups can be found in the
+Tomcat And Solr User Management part of the `Solr installation page`_.
+
+Geoserver Configuration
+~~~~~~~~~~~~~~~~~~~~~~~
 .. sidebar:: Manual Geoserver Update
 
   Alternatively, you can change the Geoserver username and password manually by 
@@ -390,6 +458,17 @@ the replication system and how to configure Metacat to replicate with another no
   will be supported for a while longer, but will likely be deprecated in a future
   release in favor of using the DataONE replication approach. 
 
+EZID Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Metacat can be configured to assign Digital Object Identifiers (DOIs) to metadata/data objects
+through a EZID service. Click a blue question-mark icon beside any setting for detailed instructions.
+More information about each property is also included in the :doc:`metacat-properties`.
+
+.. figure:: images/screenshots/image072.png
+   :align: center
+
+   Configuring EZID service.
+
 Additional Configuration
 ------------------------
 The most dynamic Metacat properties are managed and modified with the 
@@ -413,8 +492,8 @@ optional properties that are only relevant when optional Metacat features
   <CONTEXT_DIR>/WEB_INF/metacat.properties
 
 Where ``<CONTEXT_DIR>`` is the directory in which the Metacat application code 
-lives (e.g., ``/var/lib/tomcat6/webapps/metacat``). The path is a combination 
-of the Web application directory (e.g., ``/var/lib/tomcat6/webapps/``) and 
+lives (e.g., ``/var/lib/tomcat7/webapps/metacat``). The path is a combination 
+of the Web application directory (e.g., ``/var/lib/tomcat7/webapps/``) and 
 the Metacat context directory (e.g., ``metacat``). Both values depend upon how your 
 system was set up during installation.
 
@@ -433,3 +512,14 @@ found here::
 Where ``<CONTEXT_DIR>`` is the directory in which the Metacat application code 
 lives (described above) and ``<SKIN_NAME>`` is the name of the skin 
 (e.g., ``default`` or ``nceas``).
+
+Additional configuration for Tomcat 7
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When running Metacat on Tomcat 7, you may get the following 
+error logging in via the Morpho application: "Fatal error sending data to Metacat: Bad Set_Cookie header:JSESSIONID=...".
+In order to fix the issue, modify <Catalina_HOME>/conf/context.xml 
+(e.g., /var/lib/tomcat7/conf/context.xml) by adding a new attribute - "useHttpOnly" - and set it to false for the "Context" element::
+
+  <Context useHttpOnly="false">
+
+Then restart Tomcat 7.

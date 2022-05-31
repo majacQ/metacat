@@ -35,19 +35,24 @@ import java.sql.SQLException;
 import java.util.Stack;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
+import org.xml.sax.DTDHandler;
 import org.xml.sax.EntityResolver;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
+import org.xml.sax.ext.LexicalHandler;
 import org.xml.sax.helpers.DefaultHandler;
 import org.xml.sax.helpers.XMLReaderFactory;
 
 import edu.ucsb.nceas.metacat.BasicNode;
 import edu.ucsb.nceas.metacat.DBEntityResolver;
+import edu.ucsb.nceas.metacat.DBSAXNode;
 import edu.ucsb.nceas.metacat.DocumentImpl;
 import edu.ucsb.nceas.metacat.McdbException;
 import edu.ucsb.nceas.metacat.database.DBConnection;
@@ -63,7 +68,7 @@ import edu.ucsb.nceas.utilities.access.AccessControlInterface;
  * SAX parsing events when processing the XML stream.
  */
 public class AccessControlList extends DefaultHandler 
-                               implements AccessControlInterface 
+                               implements AccessControlInterface, LexicalHandler
 {
 
  
@@ -73,7 +78,7 @@ public class AccessControlList extends DefaultHandler
   private DBConnection connection;
   private String parserName;
   private Stack elementStack;
-  private String server;
+  //private String server;
   private String sep;
  
   private boolean	processingDTD;
@@ -101,7 +106,7 @@ public class AccessControlList extends DefaultHandler
   private boolean instarttag = true;
   private String tagName = "";
   
-  private static Logger logMetacat = Logger.getLogger(AccessControlList.class);
+  private static Log logMetacat = LogFactory.getLog(AccessControlList.class);
   /**
    * Construct an instance of the AccessControlList class.
    * It is used by the permission check up from DBQuery or DocumentImpl
@@ -134,7 +139,7 @@ public class AccessControlList extends DefaultHandler
                   throws SAXException, IOException, McdbException, PropertyNotFoundException
   {
 		String parserName = PropertyService.getProperty("xml.saxparser");
-		this.server = SystemUtil.getSecureServerURL();
+		//this.server = SystemUtil.getSecureServerURL();
 		this.sep = PropertyService.getProperty("document.accNumSeparator");
 
 		this.connection = conn;
@@ -198,6 +203,7 @@ public class AccessControlList extends DefaultHandler
 
     // Turn off validation
     parser.setFeature("http://xml.org/sax/features/validation", true);
+    parser.setProperty("http://xml.org/sax/properties/lexical-handler", this);
       
     // Set Handlers in the parser
     // Set the ContentHandler to this instance
@@ -207,6 +213,7 @@ public class AccessControlList extends DefaultHandler
     // Set the EntityReslover to DBEntityResolver instance
     EntityResolver eresolver = new DBEntityResolver(connection,this,null);
     parser.setEntityResolver((EntityResolver)eresolver);
+    parser.setDTDHandler((DTDHandler)this);
 
     // Set the ErrorHandler to this instance
     parser.setErrorHandler((ErrorHandler)this);
@@ -238,6 +245,7 @@ public class AccessControlList extends DefaultHandler
    * element is detected. Used in this context to parse and store
    * the acl information in class variables.
    */
+  @Override
   public void startElement (String uri, String localName, 
                             String qName, Attributes atts) 
          throws SAXException 
@@ -383,11 +391,27 @@ public class AccessControlList extends DefaultHandler
     * @param publicId Public Identifier of the DTD
     * @param systemId System Identifier of the DTD
     */
+  @Override
   public void startDTD(String name, String publicId, String systemId) 
               throws SAXException {
+      processingDTD = true;
+      logMetacat.debug("AccessControlList.startDTD - Setting processingDTD to true");
+      logMetacat.debug("AccessControlList.startDTD - start DTD");
     docname = name;
     doctype = publicId;
     systemid = systemId;
+  }
+  
+  /**
+   * SAX Handler that receives notification of end of DTD
+   */
+  @Override
+  public void endDTD() throws SAXException
+  {
+
+      processingDTD = false;
+      logMetacat.debug("AccessControlList.endDTD - Setting processingDTD to false");
+      logMetacat.debug("AccessControlList.endDTD - end DTD");
   }
 
   /** 
@@ -395,7 +419,9 @@ public class AccessControlList extends DefaultHandler
    * @param name name of the entity
    */
   public void startEntity(String name) throws SAXException {
+      logMetacat.debug("AccessControlList.startEntity ");
     if (name.equals("[dtd]")) {
+        logMetacat.debug("AccessControlList.startEntity  set processingDTD to true.");
       processingDTD = true;
     }
   }
@@ -405,7 +431,9 @@ public class AccessControlList extends DefaultHandler
    * @param name name of the entity
    */
   public void endEntity(String name) throws SAXException {
+      logMetacat.debug("AccessControlList.endEntity ");
     if (name.equals("[dtd]")) {
+        logMetacat.debug("AccessControlList.endEntity  set processingDTD to false.");
       processingDTD = false;
     }
   }
@@ -733,43 +761,31 @@ public class AccessControlList extends DefaultHandler
     }
   }
 
-  /* Get SystemID for @publicID from Metacat DB Catalog. */
-  private String getSystemID(String publicID) throws SQLException, PropertyNotFoundException {
+  
+  /**
+   * SAX Handler that receives notification of comments in the DTD
+   */
+  public void comment(char[] ch, int start, int length) throws SAXException
+  {
+      logMetacat.trace("AccessControlList.comment - starting comment");
+    
+  }
 
-		String systemID = "";
-		PreparedStatement pstmt = null;
-		DBConnection conn = null;
-		int serialNumber = -1;
+  /**
+   * SAX Handler that receives notification of the start of CDATA sections
+   */
+  public void startCDATA() throws SAXException
+  {
+      logMetacat.trace("AccessControlList.startCDATA - starting CDATA");
+  }
 
-		try {
-			//check out DBConnection
-			conn = DBConnectionPool.getDBConnection("AccessControlList.getSystemID");
-			serialNumber = conn.getCheckOutSerialNumber();
-
-			pstmt = conn.prepareStatement("SELECT system_id FROM xml_catalog "
-					+ "WHERE entry_type = 'DTD' " + "AND public_id = ?");
-			pstmt.setString(1, publicID);
-			pstmt.execute();
-			ResultSet rs = pstmt.getResultSet();
-			boolean hasRow = rs.next();
-			if (hasRow) {
-				systemID = rs.getString(1);
-				// system id may not have server url on front.  Add it if not.
-				if (!systemID.startsWith("http://")) {
-					systemID = SystemUtil.getContextURL() + systemID;
-				}
-			}
-
-			return systemID;
-		}//try
-		finally {
-			try {
-				pstmt.close();
-			} finally {
-				DBConnectionPool.returnDBConnection(conn, serialNumber);
-			}
-		}//finally
-	}
+  /**
+   * SAX Handler that receives notification of the end of CDATA sections
+   */
+  public void endCDATA() throws SAXException
+  {
+      logMetacat.trace("AccessControlList.endCDATA - end CDATA");
+  }
   
   public static void main(String[] args) {
 	  System.out.println("text value for CHMOD (" + CHMOD + "): " + txtValue(CHMOD));

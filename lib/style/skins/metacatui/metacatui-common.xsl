@@ -50,18 +50,19 @@
 		<!-- no content to render for body header -->
 	</xsl:template>
     
-    <xsl:template name="emldocument">
-    	<!-- CONTENT SECTION
-	    ======================================================================= -->    
-	    <article id="Metadata">
-	    	<div class="container">
-	    		<div class="row-fluid">
-	        		<xsl:apply-templates select="*[local-name()='eml']"/>
-	        	</div>
-	        </div>
-	    </article>  		
-					
-    </xsl:template>
+	<xsl:template name="emldocument">
+		<!-- CONTENT SECTION
+		======================================================================= -->    
+		<article id="Metadata" class="container">
+			<xsl:apply-templates select="*[local-name()='eml']"/>
+		</article>  		
+	</xsl:template>
+
+	<xsl:template name="isodocument">
+		<article id="Metadata" class="container">
+			<xsl:apply-templates select="*[local-name()='MD_Metadata'] | *[local-name()='MI_Metadata']"/>
+		</article>  			
+	</xsl:template>
 
 	<xsl:template name="bodyfooter">
 		<!-- no content to render for body footer -->

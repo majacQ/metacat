@@ -34,7 +34,8 @@ import java.util.Vector;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.metacat.AuthSession;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
@@ -53,8 +54,10 @@ import edu.ucsb.nceas.utilities.StringUtil;
 public class AuthAdmin extends MetacatAdmin {
 
 	private static AuthAdmin authAdmin = null;
-	private static Logger logMetacat = Logger.getLogger(AuthAdmin.class);
-
+	private static Log logMetacat = LogFactory.getLog(AuthAdmin.class);
+	private static final String AUTHCLASSKEY = "auth.class";
+	public static final String FILECLASS = "edu.ucsb.nceas.metacat.authentication.AuthFile";
+    public static final String LDAPCLASS = "edu.ucsb.nceas.metacat.AuthLdap";
 	/**
 	 * private constructor since this is a singleton
 	 */
@@ -161,20 +164,34 @@ public class AuthAdmin extends MetacatAdmin {
 							globalPropertyKey);
 				}
 				
-				// process the fields for the global options (group 1)
-				SortedMap<Integer, MetaDataProperty> authClientPropertyMap = authMetaData
+				//String authClassName = request.getParameter(AUTHCLASSKEY);
+				//System.out.println("the auth class name from the request is "+authClassName);
+				// process the fields for the file-based options (group 2)
+				SortedMap<Integer, MetaDataProperty> filePropertyMap = authMetaData
 						.getPropertiesInGroup(2);
-				Set<Integer> authClientPropertyIndexes = authClientPropertyMap.keySet();
-				for (Integer authClientPropertyIndex : authClientPropertyIndexes) {
-					String authClientPropertyKey = authClientPropertyMap.get(
-							authClientPropertyIndex).getKey();
+				Set<Integer> filePropertyIndexes = filePropertyMap.keySet();
+				for (Integer filePropertyIndex : filePropertyIndexes) {
+					String filePropertyKey = filePropertyMap.get(
+							filePropertyIndex).getKey();
 					PropertyService.checkAndSetProperty(request,
-							authClientPropertyKey);
+							filePropertyKey);
 				}
+				
+				// process the fields for the ldap-based options (group 3)
+                SortedMap<Integer, MetaDataProperty> ldapPropertyMap = authMetaData
+                        .getPropertiesInGroup(3);
+                Set<Integer> ldapPropertyIndexes = ldapPropertyMap.keySet();
+                for (Integer ldapPropertyIndex : ldapPropertyIndexes) {
+                    String ldapPropertyKey = ldapPropertyMap.get(
+                            ldapPropertyIndex).getKey();
+                    PropertyService.checkAndSetProperty(request,
+                            ldapPropertyKey);
+                }
 
 				// we need to write the options from memory to the properties
 				// file
 				PropertyService.persistProperties();
+				PropertyService.syncToSettings();
 
 				// Validate that the options provided are legitimate. Note that
 				// we've allowed them to persist their entries. As of this point
@@ -255,7 +272,8 @@ public class AuthAdmin extends MetacatAdmin {
 				} catch (ConnectException ce) {
 					if (ce.getMessage() != null
 							&& ce.getMessage().contains("NameNotFoundException")) {
-						errorVector.add("User : " + adminUser + " is not in LDAP.");
+						errorVector.add("User : " + adminUser + " is not in the specified identity service."+
+							" If you chose to use the AuthFile as the authentication class, please add the user to the password file first.");
 					} else {
 						errorVector.add("Connection error while verifying Metacat " + 
 								"Administrators : " + ce.getMessage());
@@ -271,6 +289,8 @@ public class AuthAdmin extends MetacatAdmin {
         } catch (ClassNotFoundException e) {
             errorVector.add("AuthAdmin.validateOptions - ClassNotFoundException : "
                   + e.getMessage());
+        } catch (Exception e) {
+            errorVector.add("AuthAdmin.validateOptions - An exception : "+e.getMessage());
         }
 
 		return errorVector;

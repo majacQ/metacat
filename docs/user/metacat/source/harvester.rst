@@ -263,41 +263,17 @@ source code is installed:
 2. Set the METACAT_HOME environment variable to the value of the Metacat 
    installation directory. Some examples follow: 
 
-   On Windows: 
-
-   ::
-   
-     set METACAT_HOME=C:\somePath\metacat
-
-   On Linux/Unix (bash shell): 
-   
    ::
    
      export METACAT_HOME=/home/somePath/metacat
 
 3. cd to the following directory: 
 
-   On Windows: 
-   
-   ::
-   
-     cd %METACAT_HOME%\lib\harvester
-
-   On Linux/Unix: 
-
    ::
    
      cd $METACAT_HOME/lib/harvester
 
 4. Run the appropriate Harvester shell script, as determined by the operating system: 
-
-   On Windows: 
-   
-   ::
-   
-     runHarvestListEditor.bat
-
-   On Linux/Unix: 
 
    ::
    
@@ -311,14 +287,6 @@ default values), create a file called .harvestListEditor (note the leading
 dot character). Use a plain text editor to create the file and place the file 
 in the Site Contact's home directory. To determine the home directory, open a 
 system command window or terminal window and type the following: 
-
-On Windows: 
-
-::
-
-  echo %USERPROFILE%
-
-On Linux/Unix: 
 
 ::
 
@@ -539,17 +507,7 @@ To run Harvester as a servlet:
      -->
 
 2. Save the edited file. 
-3. Shut down Tomcat. 
-4. Redeploy Metacat by running the following two Ant commands from the 
-   top-level directory of your Metacat installation: 
-
-   ::
-   
-     ant cleanweb
-     ant install
-
-5. Restart Tomcat. Note that you will have to edit the ``metacat.properties`` 
-   file to specify harvester settings.
+3. Restart Tomcat.
 
 About thirty seconds after you restart Tomcat, the Harvester servlet will 
 start executing. The first harvest will occur after the number of hours 
@@ -567,41 +525,17 @@ To run Harvester in a Command Window:
 2. Set the ``METACAT_HOME`` environment variable to the value of the 
    Metacat webapp deployment directory. 
 
-   On Windows: 
-
-   ::
-   
-     set METACAT_HOME=C:\somePath\metacat
-
-   On Linux/Unix (bash shell): 
-
    ::
    
      export METACAT_HOME=/home/somePath/metacat
 
 3. cd to the following directory: 
 
-   On Windows: 
-
-   ::
-   
-     cd %METACAT_HOME%\lib\harvester
-
-   On Linux/Unix: 
-
    ::
    
      cd $METACAT_HOME/lib/harvester
 
 4. Run the appropriate Harvester shell script, as determined by the operating system: 
-
-   On Windows: 
-
-   ::
-   
-     runHarvester.bat %METACAT_HOME%
-
-   On Linux/Unix: 
 
    ::
    

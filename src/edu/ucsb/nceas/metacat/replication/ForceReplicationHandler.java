@@ -33,7 +33,8 @@ package edu.ucsb.nceas.metacat.replication;
 import java.io.IOException;
 import java.net.*;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.shared.ServiceException;
@@ -61,8 +62,8 @@ public class ForceReplicationHandler implements Runnable
   // other metacat in its serverlist to update this docid if A is a hub. But we
   // don't want A to notify B again. B is nofitification of A
   private String notificationServer = null;
-  private static Logger logReplication = Logger.getLogger("ReplicationLogging");
-  private static Logger logMetacat = Logger.getLogger(ForceReplicationHandler.class);
+  private static Log logReplication = LogFactory.getLog("ReplicationLogging");
+  private static Log logMetacat = LogFactory.getLog(ForceReplicationHandler.class);
 
   /**
    * Constructor of ForceReplicationHandler
@@ -336,9 +337,9 @@ public class ForceReplicationHandler implements Runnable
 				logReplication.error("ForceReplicationHandler.run - URL error in ForceReplicationHandler.run for server "
 						+ server + " : " + mue.getMessage());
 //				mue.printStackTrace();
-			} catch (IOException io) {
+			} catch (Exception io) {
 		    	logMetacat.error("ForceReplicationHandler.run - " + ReplicationService.METACAT_REPL_ERROR_MSG);
-				logReplication.error("ForceReplicationHandler.run - I/O error in ForceReplicationHandler.run for server "
+				logReplication.error("ForceReplicationHandler.run - Error in ForceReplicationHandler.run for server "
 						+ server + " : " + io.getMessage());
 			}
 		}//for

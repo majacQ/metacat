@@ -37,7 +37,8 @@ import java.io.BufferedWriter;
 import java.io.InputStream;
 import java.io.IOException;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.xml.sax.SAXException;
 
 import edu.ucsb.nceas.metacat.database.DBConnection;
@@ -63,7 +64,7 @@ public class SchemaLocationResolver
   private String WHITESPACESTRING =" ";   
   private boolean downloadNewSchema = false;
 
-  private static Logger logMetacat = Logger.getLogger(SchemaLocationResolver.class);
+  private static Log logMetacat = LogFactory.getLog(SchemaLocationResolver.class);
 
   public SchemaLocationResolver()
   {	  
@@ -151,7 +152,7 @@ public class SchemaLocationResolver
     //System.out.println("the parent schema new url in metacat ============="+parentSchemaNewURLInMetacat);
     if(externalBaseURL != null)
     {
-      InputStream in = DBEntityResolver.checkURLConnection(SystemUtil.getContextURL()+parentSchemaNewURLInMetacat);
+      InputStream in = DBEntityResolver.checkURLConnection(SystemUtil.getInternalContextURL()+parentSchemaNewURLInMetacat);
       XMLSchemaParser parser = new XMLSchemaParser(in);
       parser.parse();
       Vector<String> includedSchemaPaths = parser.getIncludedSchemaFilePathes();
@@ -339,7 +340,7 @@ public class SchemaLocationResolver
     } 
   }
   
-  public static void main(String[] argus)
+  /*public static void main(String[] argus)
   {
      try
      {
@@ -368,7 +369,7 @@ public class SchemaLocationResolver
        logMetacat.error("erorr in Schemalocation.main: " + 
                                 e.getMessage());
      }
-  }
+  }*/
   
   /**
    * Gets the downloadNewSchema's value.

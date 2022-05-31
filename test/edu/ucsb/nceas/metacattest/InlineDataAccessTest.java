@@ -53,14 +53,12 @@ import junit.framework.TestSuite;
 public class InlineDataAccessTest
     extends MCTestCase {
 
-    private static String metacatUrl;
     private static String username;
 	private static String password;
 	private static String anotheruser;
 	private static String anotherpassword;
 	static {
 		try {
-		    metacatUrl = PropertyService.getProperty("test.metacatUrl");
 			username = PropertyService.getProperty("test.mcUser");
 			password = PropertyService.getProperty("test.mcPassword");
 			anotheruser = PropertyService.getProperty("test.mcAnotherUser");
@@ -782,15 +780,15 @@ public class InlineDataAccessTest
 
 			// try to read the document and the inline data
 			readDocid(newdocid + ".1", FAILURE, true);
-			readInlineDataWhichEqualsDoc(newdocid + ".1.1", testEmlInlineBlock1, FAILURE,
-					true);
+			readInlineDataWhichEqualsDoc(newdocid + ".1.1", testEmlInlineBlock1, SUCCESS,
+					false);
 
 			// try to update the inline data
 			testdocument = get201TestEmlDoc("InlineDataAccessTest: Doing update",
 					testEmlInlineBlock2, null, null, null, getAccessBlock(anotheruser,
 							true, false, false, true, false), null, null, null, null);
 			Thread.sleep(2000);
-			updateDocid(newdocid + ".2", testdocument, FAILURE, true);
+			updateDocid(newdocid + ".2", testdocument, SUCCESS, false);
 
 			// try to set the permissions for the inline data
 			testdocument = get201TestEmlDoc("InlineDataAccessTest: Doing insert",
@@ -800,12 +798,12 @@ public class InlineDataAccessTest
 			// updateDocid(newdocid + ".2", testdocument, SUCCESS, false);
 
 			// try to delete the document
-			deleteDocid(newdocid + ".1", FAILURE, true);
-			m.logout();
+			//deleteDocid(newdocid + ".2", FAILURE, true);
+			//m.logout();
 
 			// delete the document
 			m.login(username, password);
-			deleteDocid(newdocid + ".1", SUCCESS, false);
+			deleteDocid(newdocid + ".2", SUCCESS, false);
 			m.logout();
 
 			// ///////Case 4./////////////////////
@@ -993,7 +991,7 @@ public class InlineDataAccessTest
 					testEmlInlineBlock2, null, null, null, getAccessBlock(anotheruser,
 							true, false, false, true, false), null, null, null, null);
 			Thread.sleep(2000);
-			updateDocid(newdocid + ".2", testdocument, FAILURE, true);
+			updateDocid(newdocid + ".2", testdocument, SUCCESS, false);
 
 			// try to set the permissions for the inline data
 			testdocument = get210TestEmlDoc("InlineDataAccessTest: Doing insert",
@@ -1003,12 +1001,12 @@ public class InlineDataAccessTest
 			// updateDocid(newdocid + ".2", testdocument, SUCCESS, false);
 
 			// try to delete the document
-			deleteDocid(newdocid + ".1", FAILURE, true);
-			m.logout();
+			//deleteDocid(newdocid + ".2", FAILURE, true);
+			//m.logout();
 
 			// delete the document
 			m.login(username, password);
-			deleteDocid(newdocid + ".1", SUCCESS, false);
+			deleteDocid(newdocid + ".2", SUCCESS, false);
 			m.logout();
 
 			// ///////Case 4./////////////////////

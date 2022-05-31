@@ -33,7 +33,8 @@ import java.util.Enumeration;
 import java.util.Hashtable;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.metacat.DocumentImpl;
 import edu.ucsb.nceas.metacat.DocumentImplWrapper;
@@ -41,6 +42,7 @@ import edu.ucsb.nceas.metacat.McdbException;
 import edu.ucsb.nceas.metacat.database.DBConnection;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
+import edu.ucsb.nceas.metacat.service.XMLSchemaService;
 
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.Transformer;
@@ -49,6 +51,8 @@ import javax.xml.transform.stream.StreamResult;
 import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerConfigurationException;
 import javax.xml.transform.URIResolver;
+
+import org.dataone.service.types.v1.Checksum;
 import org.ecoinformatics.eml.EMLParser;
 
 
@@ -57,7 +61,7 @@ import org.ecoinformatics.eml.EMLParser;
  */
 public class EMLVersionsTransformer {
 	
-	private static org.apache.log4j.Logger logMetacat = Logger.getLogger(EMLVersionsTransformer.class);
+	private static Log logMetacat = LogFactory.getLog(EMLVersionsTransformer.class);
 	private static String eml210StyleFile = null;
 	static{
 		try
@@ -159,13 +163,17 @@ public class EMLVersionsTransformer {
              DBConnection dbconn = null;
              StringReader dtd = null;
              int serialNumber = -1;
+             String formatId = null;
              try
              {
             	 dbconn = DBConnectionPool
                  .getDBConnection("EMLVersionsTransformer.handleSingleEML200Document");
                   serialNumber = dbconn.getCheckOutSerialNumber();
+                  String schemaLocation = XMLSchemaService.getInstance().getNameSpaceAndLocationStringWithoutFormatId();
+                  Checksum checksum = null;
+                  File file = null;
                   documentWrapper.write(dbconn, eml210Content, pub, dtd,
-                          doAction, newId, owner, groups);
+                          doAction, newId, owner, groups, null, schemaLocation, checksum, file);
                   logMetacat.warn("Doc "+docidWithRev+" was transformed to eml210 with new id "+newId);
                   transformLog("Doc "+docidWithRev+" was transformed to eml210 with new id "+newId);
              }

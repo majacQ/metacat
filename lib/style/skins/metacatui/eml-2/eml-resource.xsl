@@ -47,6 +47,7 @@
 
   <!-- style the alternate identifier elements -->
   <xsl:template name="resourcealternateIdentifier" >
+      <xsl:param name="system"/>
       <xsl:param name="resfirstColStyle"/>
       <xsl:param name="ressecondColStyle"/>
       <xsl:if test="normalize-space(.)!=''">
@@ -56,6 +57,9 @@
         	<xsl:call-template name="i18n">
        			<xsl:with-param name="i18nElement" select="."/>
        		</xsl:call-template>
+            <xsl:if test="normalize-space($system)!=''">
+                &#160;(<xsl:value-of select="$system"/>)
+            </xsl:if>
         </div>
       </div>
       </xsl:if>
@@ -84,7 +88,7 @@
       <xsl:param name="resfirstColStyle"/>
       <xsl:param name="ressecondColStyle"/>
       <xsl:if test="normalize-space(.)!=''">
-      <div class="control-group">
+      <div class="control-group hidden">
       	<label class="control-label">Title</label>
         <div class="controls controls-well">
           <strong>
@@ -233,6 +237,38 @@
 	       <xsl:call-template name="text">
 	         <xsl:with-param name="textsecondColStyle" select="$ressecondColStyle"/>
 	       </xsl:call-template>
+		</div>
+	</div>   
+  </xsl:template>
+
+  <xsl:template name="resourceLicensed">
+     <xsl:param name="resfirstColStyle"/>
+     <xsl:param name="ressecondColStyle"/>
+     <div class="control-group">
+		<label class="control-label">License</label>
+		<div class="controls controls-well">
+      <div class="row-fluid">
+        <div class="control-group">
+          <label class="control-label">Name</label>
+          <div class="controls"><xsl:value-of select="./licenseName/text()" /></div>
+        </div>
+      </div>
+      <xsl:if test="./url">
+        <div class="row-fluid">
+          <div class="control-group">
+            <label class="control-label">URL</label>
+            <div class="controls"><xsl:value-of select="./url/text()" /></div>
+          </div>
+        </div>
+      </xsl:if>
+      <xsl:if test="./identifier">
+        <div class="row-fluid">
+          <div class="control-group">
+            <label class="control-label">Identifier</label>
+            <div class="controls"><xsl:value-of select="./identifier/text()" /></div>
+          </div>
+        </div>
+      </xsl:if>
 		</div>
 	</div>   
   </xsl:template>

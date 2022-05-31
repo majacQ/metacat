@@ -130,9 +130,11 @@ CREATE TABLE xml_catalog (
 	target_doctype VARCHAR(500),	-- the target public_id for transforms
 	public_id VARCHAR(500),	-- the unique id for this type
 	system_id VARCHAR(1000),	-- the local location of the object
+  format_id VARCHAR(1000),  -- the format id from dataone 
+  no_namespace_schema_location VARCHAR(2000), -- the identifier for a no-namespace schema
    CONSTRAINT xml_catalog_pk PRIMARY KEY (catalog_id),
    CONSTRAINT xml_catalog_uk UNIQUE
-              (entry_type, source_doctype, target_doctype, public_id)
+              (entry_type, source_doctype, target_doctype, public_id, format_id)
 );
 
 /*
@@ -299,6 +301,7 @@ CREATE INDEX identifier_docid_rev_log ON identifier((docid||'.'||rev));
  */
 CREATE TABLE systemMetadata (
 	guid   text,          -- the globally unique string identifier of the object that the system metadata describes
+	series_id text, -- the series identifier
 	serial_version VARCHAR(256), --the serial version of the object
 	date_uploaded TIMESTAMP, -- the date/time the document was first submitted
 	rights_holder VARCHAR(250), --the user who has rights to the document, usually the first persons to upload it
@@ -315,7 +318,27 @@ CREATE TABLE systemMetadata (
 	number_replicas INT8, 	-- the number of replicas allowed
 	obsoletes   text,       -- the identifier that this record obsoletes
 	obsoleted_by   text,     -- the identifier of the record that replaces this record
+  media_type   text,      -- the media type of this object
+  file_name    text,      -- the suggested file name for this object
 	CONSTRAINT systemMetadata_pk PRIMARY KEY (guid)
+);
+CREATE INDEX systemMetadata_series_id on systemMetadata(series_id);
+CREATE INDEX systemMetadata_date_uploaded on systemMetadata(date_uploaded);
+CREATE INDEX systemMetadata_date_modified on systemMetadata(date_modified);
+CREATE INDEX systemMetadata_object_format on systemMetadata(object_format);
+CREATE INDEX systemMetadata_archived on systemMetadata(archived);
+
+/*
+ * Table used to store the properties for media types. They are part of the system metadata. But a media type
+ * can have multiple properties, we have to store them in a separate table. The guids in this table refer
+ * the guids in the systemMetadata.
+ */
+CREATE TABLE smMediaTypeProperties (
+	guid    text,  -- id refer to guid in the system metadata table
+  name    text, -- name of the property
+  value    text, -- value of the property
+  CONSTRAINT smMediaTypeProperties_fk 
+     FOREIGN KEY (guid) REFERENCES systemMetadata DEFERRABLE
 );
 /*
  * For devs to remove docid, rev
@@ -325,8 +348,9 @@ CREATE TABLE systemMetadata (
  * ALTER TABLE systemMetadata ADD COLUMN number_replicas INT8;
  */
 
-
+CREATE SEQUENCE policy_id_seq;
 CREATE TABLE smReplicationPolicy (
+  policy_id INT8 default nextval('policy_id_seq'), 
 	guid text,	-- the globally unique string identifier of the object that the system metadata describes
 	member_node VARCHAR(250),	 -- replication member node
 	policy text,	 -- the policy (preferred, blocked, etc...TBD)
@@ -541,3 +565,33 @@ CREATE TABLE scheduled_job_params (
   CONSTRAINT scheduled_job_params_fk
         FOREIGN KEY (job_id) REFERENCES scheduled_job(id)
 );
+
+/*
+ * Create the quota_usage_events table
+ */
+CREATE SEQUENCE quota_usage_events_usage_local_id_seq;
+CREATE TABLE quota_usage_events (
+	usage_local_id INT8 default nextval('quota_usage_events_usage_local_id_seq'),  -- the unique usage local id (pk)
+  object text NOT NULL,  -- it should always be usage
+  quota_id INT,  -- the identifier of the quota
+  instance_id TEXT NOT NULL,  -- storage - pid of object; portal - sid of portal document
+  quantity FLOAT8 NOT NULL, -- the amount of the usage
+  date_reported TIMESTAMP,  -- the time stamp that the quota usage was reported to the quota service
+  status text, -- the status of the usage 
+  usage_remote_id INT8, -- the usage id in the remote book keeper server
+  node_id text, -- the id of the node which host the usage
+  quota_subject text, -- the subject of the quota
+  quota_type text, -- the type of the quota
+  requestor text, -- the requestor of the qutao usage
+   CONSTRAINT quota_usage_events_pk PRIMARY KEY (usage_local_id),
+   CONSTRAINT quota_usage_events_uk1 UNIQUE (quota_id, instance_id, status),
+   CONSTRAINT quota_usage_events_uk2 UNIQUE (quota_subject, quota_type, instance_id, status)
+);
+CREATE INDEX quota_usage_events_idx1 ON quota_usage_events (date_reported);
+CREATE INDEX quota_usage_events_idx2 ON quota_usage_events (quota_id);
+CREATE INDEX quota_usage_events_idx3 ON quota_usage_events (instance_id);
+CREATE INDEX quota_usage_events_idx4 ON quota_usage_events (status);
+CREATE INDEX quota_usage_events_idx5 ON quota_usage_events (usage_remote_id);
+CREATE INDEX quota_usage_events_idx6 ON quota_usage_events (quota_subject);
+CREATE INDEX quota_usage_events_idx7 ON quota_usage_events (requestor);
+CREATE INDEX quota_usage_events_idx8 ON quota_usage_events (quota_type);

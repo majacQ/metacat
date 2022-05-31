@@ -72,37 +72,49 @@
    <xsl:param name="entitytype"/>
    <xsl:param name="entityindex"/>
 
-
+<div class="attributeList">
 	<div class="row-fluid">
 		<div class="span2">
 			<!-- render the side nav -->
-			<ul class="nav nav-list" id="attributeTabs">
-			  <li class="nav-header">Variables</li>
-				<xsl:for-each select="attribute">
-					<xsl:variable name="attributeindex" select="position()"/>
-					<li>
-						<xsl:if test="position() = 1">
-							<xsl:attribute name="class">active</xsl:attribute>
-						</xsl:if>
-						<a data-toggle="tab">
-							<xsl:attribute name="href">#entity_<xsl:value-of select="$entityindex"/>_attribute_<xsl:value-of select="$attributeindex"/></xsl:attribute>
-						    <xsl:choose>
-						         <xsl:when test="references!=''">
-						          <xsl:variable name="ref_id" select="references"/>
-						          <xsl:variable name="references" select="$ids[@id=$ref_id]" />
-						          <xsl:for-each select="$references">
-						            <xsl:value-of select="attributeName"/>
-						          </xsl:for-each>
-						        </xsl:when>
-						        <xsl:otherwise>
-						          <xsl:value-of select="attributeName"/>
-						        </xsl:otherwise>
-							</xsl:choose>
-							
-						</a>
-					</li>
-				</xsl:for-each>
-			</ul>
+      <span class="nav-header">Variables</span>
+      <table class="attributeListTable">
+        <tbody>
+        <xsl:for-each select="attribute">
+          <xsl:variable name="attributeindex" select="position()"/>
+          <tr>
+            <td>
+              <xsl:if test="annotation">
+                <span class="icon-stack annotation-icon">
+                  <i class="icon icon-certificate icon-stack-base"></i>
+                  <i class="icon icon-ok"></i>
+                </span>
+              </xsl:if>
+            </td>
+            <td>    
+              <xsl:if test="position() = 1">
+                <xsl:attribute name="class">active</xsl:attribute>
+              </xsl:if>
+              <a data-toggle="tab">
+                <xsl:attribute name="title"><xsl:value-of select="attributeName"/></xsl:attribute>
+                <xsl:attribute name="href">#entity_<xsl:value-of select="$entityindex"/>_attribute_<xsl:value-of select="$attributeindex"/></xsl:attribute>
+                  <xsl:choose>
+                      <xsl:when test="references!=''">
+                        <xsl:variable name="ref_id" select="references"/>
+                        <xsl:variable name="references" select="$ids[@id=$ref_id]" />
+                        <xsl:for-each select="$references">
+                          <xsl:value-of select="attributeName"/>
+                        </xsl:for-each>
+                      </xsl:when>
+                      <xsl:otherwise>
+                        <xsl:value-of select="attributeName"/>
+                      </xsl:otherwise>
+                </xsl:choose>
+              </a>
+            </td>
+          </tr>
+        </xsl:for-each>
+        </tbody>
+      </table>
 		</div>	
 		
 		<div class="tab-content span10">
@@ -118,9 +130,21 @@
 		<xsl:if test="position() = 1">
 			<xsl:attribute name="class">tab-pane active</xsl:attribute>
 		</xsl:if>
+		
+		<!-- for annotating this section -->
+		<xsl:variable name="absolutePath" >
+         	<xsl:for-each select="ancestor-or-self::*">
+         		<xsl:text>/</xsl:text>			         	
+         		<xsl:value-of select="local-name()" /> 
+         		<xsl:if test="local-name() = 'dataTable'">
+         			<xsl:text>[</xsl:text>
+         				<xsl:value-of select="$entityindex" /> 
+         			<xsl:text>]</xsl:text>			         	
+         		</xsl:if>        		
+         	</xsl:for-each>
+         </xsl:variable>
 
-
-  	<!--  Name -->
+ 	<!--  Name -->
   	<div class="control-group">
 		<label class="control-label">Name</label>
 		<div class="controls controls-well">
@@ -137,8 +161,51 @@
 		        </xsl:otherwise>
 		     </xsl:choose>
 		</div>
+	</div>
+
+  <xsl:if test="annotation">
+    <div class="control-group">
+      <label class="control-label">
+        <span class="icon-stack annotation-icon">
+          <i class="icon icon-certificate icon-stack-base"></i>
+          <i class="icon icon-ok"></i>
+        </span>
+        Annotations
+        <xsl:call-template name="annotation-info-tooltip" />
+      </label>
+      <div class="controls controls-well annotations-container">
+        <xsl:for-each select="annotation">
+          <xsl:call-template name="annotation">
+            <xsl:with-param name="context" select="concat('Attribute &lt;strong&gt;', ../attributeName, '&lt;/strong&gt; in ', local-name(../../..), ' &lt;strong&gt;', ../../../entityName, '&lt;/strong&gt;')" />
+          </xsl:call-template>
+        </xsl:for-each>
+      </div>
+    </div>
+  </xsl:if>
+
+	<!--  Header for the section and annotation target -->
+	<div class="annotation-target">
+		<xsl:attribute name="id">sem_entity_<xsl:value-of select="$entityindex"/>_attribute_<xsl:value-of select="$attributeindex"/></xsl:attribute>
+		<xsl:attribute name="resource">#xpointer(<xsl:value-of select="$absolutePath"/>[<xsl:value-of select="$attributeindex"/>])</xsl:attribute>
+		
+		<span class="annotation-attribute-name">
+			PLACEHOLDER
+			<!--  
+			<xsl:choose>
+				<xsl:when test="references!=''">
+		          <xsl:variable name="ref_id" select="references"/>
+		          <xsl:variable name="references" select="$ids[@id=$ref_id]" />
+		          <xsl:for-each select="$references">
+		            <xsl:value-of select="attributeName"/>
+		          </xsl:for-each>
+		        </xsl:when>
+		        <xsl:otherwise>
+		          <xsl:value-of select="attributeName"/>
+		        </xsl:otherwise>
+		     </xsl:choose>
+		     -->
+		</span>
 	</div>	
-    
   
 
 	<!-- attribute label-->
@@ -542,7 +609,7 @@
 
    <!-- The eleventh row for method-->
   <div class="control-group">
-		<label class="control-label">Method</label>
+		<label class="control-label">Methods &amp; Sampling</label>
 		<div class="controls controls-well">
 		    <xsl:choose>
 		         <xsl:when test="references!=''">
@@ -550,8 +617,8 @@
 		          <xsl:variable name="references" select="$ids[@id=$ref_id]" />
 		          <xsl:for-each select="$references">
 		            <xsl:choose>
-		               <xsl:when test="method!=''">
-		                   <xsl:for-each select="method">
+		               <xsl:when test="methods!=''">
+		                   <xsl:for-each select="methods">
 		                     <xsl:call-template name="attributemethod">
 		                       <xsl:with-param name="docid" select="$docid"/>
 		                       <xsl:with-param name="entitytype" select="$entitytype"/>
@@ -568,8 +635,8 @@
 		        </xsl:when>
 		        <xsl:otherwise>
 		           <xsl:choose>
-		               <xsl:when test="method!=''">
-		                   <xsl:for-each select="method">
+		               <xsl:when test="methods!=''">
+		                   <xsl:for-each select="methods">
 		                     <xsl:call-template name="attributemethod">
 		                       <xsl:with-param name="docid" select="$docid"/>
 		                       <xsl:with-param name="entitytype" select="$entitytype"/>
@@ -586,7 +653,6 @@
 		     </xsl:choose>
 	     </div>
      </div>
-     
      </div> <!-- end the attribute section -->
      
      </xsl:for-each>
@@ -594,7 +660,8 @@
   	</div>
   	
   </div>
-  
+</div>
+
  </xsl:template>
 
 
@@ -1143,7 +1210,7 @@
 
 
    <!-- The eleventh row for method-->
-  <tr><th class="rowodd">Method</th>
+  <tr><th class="rowodd">Methods &amp; Sampling</th>
    <xsl:for-each select="attribute">
     <xsl:if test="position() = $attributeindex">
     <xsl:variable name="index" select="position()"/>
@@ -1159,9 +1226,9 @@
           <xsl:variable name="references" select="$ids[@id=$ref_id]" />
           <xsl:for-each select="$references">
             <xsl:choose>
-               <xsl:when test="method!=''">
+               <xsl:when test="methods!=''">
                  <td colspan="1" align="center" class="{$stripes}">
-                   <xsl:for-each select="method">
+                   <xsl:for-each select="methods">
                      <xsl:call-template name="attributemethod">
                        <xsl:with-param name="docid" select="$docid"/>
                        <xsl:with-param name="entitytype" select="$entitytype"/>
@@ -1181,9 +1248,9 @@
         </xsl:when>
         <xsl:otherwise>
            <xsl:choose>
-               <xsl:when test="method!=''">
+               <xsl:when test="methods!=''">
                  <td colspan="1" align="center" class="{$stripes}">
-                   <xsl:for-each select="method">
+                   <xsl:for-each select="methods">
                      <xsl:call-template name="attributemethod">
                        <xsl:with-param name="docid" select="$docid"/>
                        <xsl:with-param name="entitytype" select="$entitytype"/>
@@ -1242,7 +1309,7 @@
          <xsl:with-param name="stripes" select="$stripes"/>
        </xsl:call-template>
     </xsl:for-each>
-    <xsl:for-each select="datetime">
+    <xsl:for-each select="dateTime">
        <xsl:call-template name="datetime">
           <xsl:with-param name="stripes" select="$stripes"/>
        </xsl:call-template>

@@ -30,15 +30,25 @@ package edu.ucsb.nceas.metacat;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.Hashtable;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.dataone.service.types.v1.Identifier;
+import org.dataone.service.types.v1.Permission;
+import org.dataone.service.types.v1.Session;
+import org.dataone.service.types.v1.Subject;
+import org.dataone.service.types.v2.SystemMetadata;
 
 import edu.ucsb.nceas.metacat.accesscontrol.AccessControlList;
 import edu.ucsb.nceas.metacat.database.DBConnection;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
+import edu.ucsb.nceas.metacat.dataone.D1AuthHelper;
+import edu.ucsb.nceas.metacat.dataone.D1NodeService;
+import edu.ucsb.nceas.metacat.dataone.hazelcast.HazelcastService;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.service.SessionService;
 import edu.ucsb.nceas.metacat.shared.MetacatUtilException;
@@ -63,7 +73,7 @@ public class PermissionController
    private static final long TOPLEVELSTARTNODEID = 0; //if start node is 0, means it is top
                                          //level document
 
-   private static Logger logMetacat = Logger.getLogger(PermissionController.class);
+   private static Log logMetacat = LogFactory.getLog(PermissionController.class);
 
    /**
 	 * Constructor for PermissionController
@@ -134,7 +144,32 @@ public class PermissionController
 		// not much we can do here, except treat them as normal
 		logMetacat.warn("Error checking for administrator: " + e.getMessage(), e);
 	}
+    
+    // for DataONE rightsHolder permission
+    boolean isOwner = false;
+    try {
+		Session userSession = new Session();
+		Subject subject = new Subject();
+		subject.setValue(user);
+		userSession.setSubject(subject);
+		Identifier pid = new Identifier();
+		pid.setValue(guid);
+		//isOwner = D1NodeService.userHasPermission(userSession, pid, Permission.CHANGE_PERMISSION);
+		SystemMetadata sysMeta = HazelcastService.getInstance().getSystemMetadataMap().get(pid);
+		isOwner = (sysMeta.getRightsHolder().equals(subject));
+		if(!isOwner) {
+		    isOwner = D1AuthHelper.expandRightsHolder(sysMeta.getRightsHolder(), subject);
+		}
+    } catch (Exception e) {
+		logMetacat.warn("Error checking for DataONE permissions: " + e.getMessage(), e);
+		isOwner = false;
+    }
+    if (isOwner) {
+    	return true;
+    }
 
+    logMetacat.debug("Checking permission on " + this.guid + " for user: " + user + " and groups: " + Arrays.toString(groups));
+    
     //create a userpackage including user, public and group member
     userPackage=createUsersPackage(user, groups);
 
@@ -768,6 +803,9 @@ public class PermissionController
     //bind every elenment in user name array
     for (int i=0;i<lengthOfArray; i++)
     {
+        logMetacat.debug("Checking permission for principal: " + principals[i] );
+        logMetacat.debug("SQL: " + pStmt.toString());
+        
       pStmt.setString(2, principals[i]);
       pStmt.execute();
       rs=pStmt.getResultSet();

@@ -27,13 +27,18 @@
 package edu.ucsb.nceas.metacat;
 
 import java.net.ConnectException;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Vector;
 
 import javax.servlet.http.HttpSession;
 import javax.servlet.http.HttpServletRequest;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.collections4.map.LRUMap;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.shared.MetacatUtilException;
@@ -51,7 +56,8 @@ public class AuthSession {
 	private HttpSession session = null;
 	private AuthInterface authService = null;
 	private String statusMessage = null;
-	private static Logger logMetacat = Logger.getLogger(AuthSession.class);
+	private Map<String, String[]> synchronizedGroupsCacheMap = null;
+	private static Log logMetacat = LogFactory.getLog(AuthSession.class);
 
 	/**
 	 * Construct an AuthSession
@@ -70,6 +76,25 @@ public class AuthSession {
         }
 		this.authService = (AuthInterface) createObject(authClass);
 	}
+	
+	/**
+	 * Constructor with cached group information for users.
+	 * @param groupCacheSize  the size of the LRUMap map
+	 * @throws InstantiationException
+	 * @throws IllegalAccessException
+	 * @throws ClassNotFoundException
+	 */
+	public AuthSession(int groupCacheSize) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+        try {
+            this.authClass = PropertyService.getProperty("auth.class");
+        } catch (PropertyNotFoundException e) {
+            logMetacat.error("AuthSession.constructor - " + e.getMessage());
+        }
+        this.authService = (AuthInterface) createObject(authClass);
+        LRUMap<String, String[]> LRUMap = new LRUMap<String, String[]>(groupCacheSize);
+        synchronizedGroupsCacheMap = Collections.synchronizedMap(LRUMap);
+    }
+	
 
 	/**
 	 * Get the new session
@@ -96,17 +121,25 @@ public class AuthSession {
 				// hence groups[] is generated from groupsWithDescription[][]
 				String[][] groupsWithDescription = authService.getGroups(username,
 						password, username);
-				String groups[] = new String[groupsWithDescription.length];
+				String groups[] = null;
+				if(groupsWithDescription != null) {
+				    groups = new String[groupsWithDescription.length];
 
-				for (int i = 0; i < groupsWithDescription.length; i++) {
-					groups[i] = groupsWithDescription[i][0];
+	                for (int i = 0; i < groupsWithDescription.length; i++) {
+	                    groups[i] = groupsWithDescription[i][0];
+	                }
+
 				}
-
+				
 				if (groups == null) {
-					groups = new String[0];
+                    groups = new String[0];
+                }
+				String[] userInfo = null;
+				try {
+				     userInfo = authService.getUserInfo(username, password);
+				} catch (ConnectException e) {
+				    logMetacat.warn("AuthSession.authenticate - can't get the user info for user "+ username+" since "+e.getMessage());;
 				}
-
-				String[] userInfo = authService.getUserInfo(username, password);
 
 				this.session = createSession(request, username, password, groups,
 						userInfo);
@@ -155,7 +188,7 @@ public class AuthSession {
 		session.setAttribute("username", username);
 		session.setAttribute("password", password);
 
-		if (userInfo != null & userInfo.length == 3) {
+		if (userInfo != null && userInfo.length == 3) {
 			session.setAttribute("name", userInfo[0]);
 			session.setAttribute("organization", userInfo[1]);
 			session.setAttribute("email", userInfo[2]);
@@ -220,7 +253,7 @@ public class AuthSession {
 			String username, String[] groups, String userInfo[]) {
 		StringBuffer out = new StringBuffer();
 
-		out.append("<?xml version=\"1.0\"?>\n");
+		out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
 		out.append("<" + tag + ">");
 		out.append("\n  <message>" + message + "</message>\n");
 		if (sessionId != null) {
@@ -267,6 +300,45 @@ public class AuthSession {
 		out.append("</" + tag + ">");
 
 		return out.toString();
+	}
+	
+	
+	/**
+	 * Get the all groups in which the given userDN is
+	 * @param logInUserName it can be null
+	 * @param logInUserPassword it can be null
+	 * @param userDN
+	 * @return null if no groups were found for the userDN
+	 */
+	public String[] getGroups(String logInUserName, String logInUserPassword, String userDN) throws Exception{
+	    String groups[] = null;
+	    boolean lookUpLDAP = true;
+	    if (synchronizedGroupsCacheMap != null) {
+	        if (synchronizedGroupsCacheMap.containsKey(userDN)) {
+	            groups = synchronizedGroupsCacheMap.get(userDN);
+	            lookUpLDAP = false; //we got the group information, so will skip the process looking up the ldap server
+	            logMetacat.debug("AuthSession.getGroups - get the group information for the user " + userDN +
+	                    " from the cache and it has groups - " + Arrays.toString(groups));
+	        }
+	    }
+	    if (lookUpLDAP) {
+	        String[][] groupsWithDescription = authService.getGroups(logInUserName,
+	                logInUserPassword, userDN);
+	        if(groupsWithDescription != null) {
+	            groups = new String[groupsWithDescription.length];
+	            for (int i = 0; i < groupsWithDescription.length; i++) {
+	                groups[i] = groupsWithDescription[i][0];
+	                logMetacat.debug("AuthSession.getGroups - found that user "+userDN+" is the member of the group "+groups[i]);
+	            }
+	        }
+	        if (synchronizedGroupsCacheMap != null) {
+	            //cache is enabled, so Metacat puts the group information to the map
+	            synchronizedGroupsCacheMap.put(userDN, groups);
+	            logMetacat.debug("AuthSession.getGroups - Metacat got the group information for the user " + userDN + " from LDAP and put " + 
+	                             Arrays.toString(groups) + " into the cache." );
+	        }
+	    }
+        return groups;
 	}
 
 	/**

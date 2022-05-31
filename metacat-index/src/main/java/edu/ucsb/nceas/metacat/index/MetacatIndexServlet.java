@@ -21,8 +21,8 @@ package edu.ucsb.nceas.metacat.index;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.URL;
-import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletException;
@@ -30,12 +30,9 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.commons.configuration.ConfigurationException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.dataone.configuration.Settings;
-
-import edu.ucsb.nceas.metacat.common.query.EnabledQueryEngines;
+import org.dataone.client.v2.formats.ObjectFormatCache;
 
 
 /**
@@ -68,6 +65,7 @@ public class MetacatIndexServlet extends HttpServlet {
         //System.out.println("the file is "+url.getPath());
         //ApplicationController controller = null;
         try {
+            ObjectFormatCache.getInstance();
              //ApplicationController controller = new ApplicationController(FILEPREFIX + url.getFile(), fullMetacatPropertiesFilePath);
             ApplicationController controller = new ApplicationController("/index-processor-context.xml", fullMetacatPropertiesFilePath);
              //Start the controller in other thread - SystemmetadataEventListener and to generate indexes for those haven't been indexed in another thread
@@ -76,7 +74,6 @@ public class MetacatIndexServlet extends HttpServlet {
         } catch (Exception e) {
             throw new ServletException(e.getMessage());
         }
-       
         //controller.startIndex();//Start to generate indexes for those haven't been indexed in another thread
         //List<SolrIndex> list = controller.getSolrIndexes();
         //System.out.println("++++++++++++++++++++++++------------------- the size is  "+list.size());
@@ -124,7 +121,18 @@ public class MetacatIndexServlet extends HttpServlet {
      *Actions needed to be done before close the servlet
      */
     public void destroy() {
-     //do nothing
+        //Stop the index executor service
+        ExecutorService executor = SystemMetadataEventListener.getExecutor();
+        if (executor != null) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }                   
+            } catch (InterruptedException e) {              
+                executor.shutdownNow();
+            }
+        }
     }
     
     /** Handle "GET" method requests from HTTP clients */

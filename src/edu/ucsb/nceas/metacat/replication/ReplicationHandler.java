@@ -40,12 +40,14 @@ import java.text.DateFormat;
 import java.text.ParseException;
 import java.util.Date;
 import java.util.Hashtable;
+import java.util.Iterator;
 import java.util.TimerTask;
 import java.util.Vector;
 
-
-import org.apache.log4j.Logger;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.dataone.service.types.v2.SystemMetadata;
 import org.dataone.service.util.DateTimeMarshaller;
 import org.dataone.service.util.TypeMarshaller;
 import org.xml.sax.ContentHandler;
@@ -61,14 +63,19 @@ import edu.ucsb.nceas.metacat.DBUtil;
 import edu.ucsb.nceas.metacat.DocumentImpl;
 import edu.ucsb.nceas.metacat.DocumentImplWrapper;
 import edu.ucsb.nceas.metacat.EventLog;
+import edu.ucsb.nceas.metacat.EventLogData;
 import edu.ucsb.nceas.metacat.IdentifierManager;
 import edu.ucsb.nceas.metacat.McdbDocNotFoundException;
+import edu.ucsb.nceas.metacat.ReadOnlyChecker;
 import edu.ucsb.nceas.metacat.SchemaLocationResolver;
 import edu.ucsb.nceas.metacat.accesscontrol.AccessControlForSingleFile;
 import edu.ucsb.nceas.metacat.client.InsufficientKarmaException;
 import edu.ucsb.nceas.metacat.database.DBConnection;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
 import edu.ucsb.nceas.metacat.dataone.hazelcast.HazelcastService;
+import edu.ucsb.nceas.metacat.index.MetacatSolrIndex;
+import edu.ucsb.nceas.metacat.object.handler.NonXMLMetadataHandler;
+import edu.ucsb.nceas.metacat.object.handler.NonXMLMetadataHandlers;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.shared.HandlerException;
 import edu.ucsb.nceas.metacat.util.DocumentUtil;
@@ -91,8 +98,8 @@ public class ReplicationHandler extends TimerTask
   ReplicationServerList serverList = null;
   //PrintWriter out;
 //  private static final AbstractDatabase dbAdapter = MetacatUtil.dbAdapter;
-  private static Logger logReplication = Logger.getLogger("ReplicationLogging");
-  private static Logger logMetacat = Logger.getLogger(ReplicationHandler.class);
+  private static Log logReplication = LogFactory.getLog("ReplicationLogging");
+  private static Log logMetacat = LogFactory.getLog(ReplicationHandler.class);
   
   private static int DOCINSERTNUMBER = 1;
   private static int DOCERRORNUMBER  = 1;
@@ -133,6 +140,13 @@ public class ReplicationHandler extends TimerTask
       {
         return;
       }
+      //if it is read-only, we should not run the update
+      ReadOnlyChecker checker = new ReadOnlyChecker();
+      boolean readOnly = checker.isReadOnly();
+      if(readOnly) {
+          logReplication.info("ReplicationService.run() - this Metacat is on the read-only mode and the time replication is disabled.");
+          return;
+      }
       updateCatalog();
       update();
       //conn.close();
@@ -143,12 +157,14 @@ public class ReplicationHandler extends TimerTask
    */
   private void update()
   {
-	  
-	  _xmlDocQueryCount = 0;
-	  _xmlRevQueryCount = 0;
-	  _xmlDocQueryTime = 0;
-	  _xmlRevQueryTime = 0;
-    /*
+    Vector<InputStream> responses = new Vector<InputStream>();
+    try {
+
+        _xmlDocQueryCount = 0;
+        _xmlRevQueryCount = 0;
+        _xmlDocQueryTime = 0;
+        _xmlRevQueryTime = 0;
+        /*
      Pseudo-algorithm
      - request a doc list from each server in xml_replication
      - check the rev number of each of those documents agains the
@@ -160,189 +176,199 @@ public class ReplicationHandler extends TimerTask
      - update last_checked to keep track of the last time it was checked.
        (this info is theoretically not needed using this system but probably
        should be kept anyway)
-    */
+         */
 
-    ReplicationServer replServer = null; // Variable to store the
-                                        // ReplicationServer got from
-                                        // Server list
-    String server = null; // Variable to store server name
-//    String update;
-    Vector<InputStream> responses = new Vector<InputStream>();
-    URL u;
-    long replicationStartTime = System.currentTimeMillis();
-    long timeToGetServerList = 0;
-    
-    //Check for every server in server list to get updated list and put
-    // them in to response
-    long startTimeToGetServers = System.currentTimeMillis();
-    for (int i=0; i<serverList.size(); i++)
-    {
-        // Get ReplicationServer object from server list
-        replServer = serverList.serverAt(i);
-        // Get server name from ReplicationServer object
-        server = replServer.getServerName().trim();
-        InputStream result = null;
-        logReplication.info("ReplicationHandler.update - full update started to: " + server);
-        // Send command to that server to get updated docid information
-        try
+        ReplicationServer replServer = null; // Variable to store the
+        // ReplicationServer got from
+        // Server list
+        String server = null; // Variable to store server name
+        //    String update;
+
+        URL u;
+        long replicationStartTime = System.currentTimeMillis();
+        long timeToGetServerList = 0;
+
+        //Check for every server in server list to get updated list and put
+        // them in to response
+        long startTimeToGetServers = System.currentTimeMillis();
+        for (int i=0; i<serverList.size(); i++)
         {
-          u = new URL("https://" + server + "?server="
-          +MetacatUtil.getLocalReplicationServerName()+"&action=update");
-          logReplication.info("ReplicationHandler.update - Sending infomation " +u.toString());
-          result = ReplicationService.getURLStream(u);
+            // Get ReplicationServer object from server list
+            replServer = serverList.serverAt(i);
+            // Get server name from ReplicationServer object
+            server = replServer.getServerName().trim();
+            InputStream result = null;
+            logReplication.info("ReplicationHandler.update - full update started to: " + server);
+            // Send command to that server to get updated docid information
+            try
+            {
+                u = new URL("https://" + server + "?server="
+                        +MetacatUtil.getLocalReplicationServerName()+"&action=update");
+                logReplication.info("ReplicationHandler.update - Sending infomation " +u.toString());
+                result = ReplicationService.getURLStream(u);
+            }
+            catch (Exception e)
+            {
+                logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
+                logReplication.error( "ReplicationHandler.update - Failed to get updated doc list "+
+                        "for server " + server + " because "+e.getMessage());
+                continue;
+            }
+
+            //logReplication.info("ReplicationHandler.update - docid: "+server+" "+result);
+            //check if result have error or not, if has skip it.
+            // TODO: check for error in stream
+            //if (result.indexOf("<error>") != -1 && result.indexOf("</error>") != -1) {
+            if (result == null) {
+                logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
+                logReplication.error( "ReplicationHandler.update - Failed to get updated doc list "+
+                        "for server " + server + " because "+result);
+                continue;
+            }
+            //Add result to vector
+            responses.add(result);
         }
-        catch (Exception e)
+        timeToGetServerList = System.currentTimeMillis() - startTimeToGetServers;
+
+        //make sure that there is updated file list
+        //If response is null, metacat don't need do anything
+        if (responses==null || responses.isEmpty())
         {
-          logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
-          logReplication.error( "ReplicationHandler.update - Failed to get updated doc list "+
-                       "for server " + server + " because "+e.getMessage());
-          continue;
+            logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
+            logReplication.info( "ReplicationHandler.update - No updated doc list for "+
+                    "every server and failed to replicate");
+            return;
         }
 
-        //logReplication.info("ReplicationHandler.update - docid: "+server+" "+result);
-        //check if result have error or not, if has skip it.
-        // TODO: check for error in stream
-        //if (result.indexOf("<error>") != -1 && result.indexOf("</error>") != -1) {
-        if (result == null) {
-          logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
-          logReplication.error( "ReplicationHandler.update - Failed to get updated doc list "+
-                       "for server " + server + " because "+result);
-          continue;
+
+        //logReplication.info("ReplicationHandler.update - Responses from remote metacat about updated "+
+        //               "document information: "+ responses.toString());
+
+        long totalServerListParseTime = 0;
+        // go through response vector(it contains updated vector and delete vector
+        for(int i=0; i<responses.size(); i++)
+        {
+            long startServerListParseTime = System.currentTimeMillis();
+            XMLReader parser;
+            ReplMessageHandler message = new ReplMessageHandler();
+            try
+            {
+                parser = initParser(message);
+            }
+            catch (Exception e)
+            {
+                logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
+                logReplication.error("ReplicationHandler.update - Failed to replicate becaue couldn't " +
+                        " initParser for message and " +e.getMessage());
+                // stop replication
+                return;
+            }
+
+            try
+            {
+                parser.parse(new InputSource(responses.elementAt(i)));
+            }
+            catch(Exception e)
+            {
+                logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
+                logReplication.error("ReplicationHandler.update - Couldn't parse one responses "+
+                        "because "+ e.getMessage());
+                continue;
+            }
+            finally 
+            {
+                IOUtils.closeQuietly(responses.elementAt(i));
+            }
+            //v is the list of updated documents
+            Vector<Vector<String>> updateList = new Vector<Vector<String>>(message.getUpdatesVect());
+            logReplication.info("ReplicationHandler.update - The document list size is "+updateList.size()+ " from "+message.getServerName());
+            //d is the list of deleted documents
+            Vector<Vector<String>> deleteList = new Vector<Vector<String>>(message.getDeletesVect());
+            logReplication.info("ReplicationHandler.update - Update vector size: "+ updateList.size()+" from "+message.getServerName());
+            logReplication.info("ReplicationHandler.update - Delete vector size: "+ deleteList.size()+" from "+message.getServerName());
+            logReplication.info("ReplicationHandler.update - The delete document list size is "+deleteList.size()+" from "+message.getServerName());
+            // go though every element in updated document vector
+            handleDocList(updateList, DocumentImpl.DOCUMENTTABLE);
+            //handle deleted docs
+            for(int k=0; k<deleteList.size(); k++)
+            { //delete the deleted documents;
+                Vector<String> w = new Vector<String>(deleteList.elementAt(k));
+                String docId = (String)w.elementAt(0);
+                try
+                {
+                    handleDeleteSingleDocument(docId, server);
+                }
+                catch (Exception ee)
+                {
+                    continue;
+                }
+            }//for delete docs
+
+            // handle replicate doc in xml_revision
+            Vector<Vector<String>> revisionList = new Vector<Vector<String>>(message.getRevisionsVect());
+            logReplication.info("ReplicationHandler.update - The revision document list size is "+revisionList.size()+ " from "+message.getServerName());
+            handleDocList(revisionList, DocumentImpl.REVISIONTABLE);
+            DOCINSERTNUMBER = 1;
+            DOCERRORNUMBER  = 1;
+            REVINSERTNUMBER = 1;
+            REVERRORNUMBER  = 1;
+
+            // handle system metadata
+            Vector<Vector<String>> systemMetadataList = message.getSystemMetadataVect();
+            for(int k = 0; k < systemMetadataList.size(); k++) { 
+                Vector<String> w = systemMetadataList.elementAt(k);
+                String guid = (String) w.elementAt(0);
+                String remoteserver = (String) w.elementAt(1);
+                try {
+                    handleSystemMetadata(remoteserver, guid);
+                }
+                catch (Exception ee) {
+                    logMetacat.error("Error replicating system metedata for guid: " + guid, ee);
+                    continue;
+                }
+            }
+
+            totalServerListParseTime += (System.currentTimeMillis() - startServerListParseTime);
+        }//for response
+
+        //updated last_checked
+        for (int i=0;i<serverList.size(); i++)
+        {
+            // Get ReplicationServer object from server list
+            replServer = serverList.serverAt(i);
+            try
+            {
+                updateLastCheckTimeForSingleServer(replServer);
+            }
+            catch(Exception e)
+            {
+                continue;
+            }
+        }//for
+
+        long replicationEndTime = System.currentTimeMillis();
+        logMetacat.debug("ReplicationHandler.update - Total replication time: " + 
+                (replicationEndTime - replicationStartTime));
+        logMetacat.debug("ReplicationHandler.update - time to get server list: " + 
+                timeToGetServerList);
+        logMetacat.debug("ReplicationHandler.update - server list parse time: " + 
+                totalServerListParseTime);
+        logMetacat.debug("ReplicationHandler.update - 'in xml_documents' total query count: " + 
+                _xmlDocQueryCount);
+        logMetacat.debug("ReplicationHandler.update - 'in xml_documents' total query time: " + 
+                _xmlDocQueryTime + " ms");
+        logMetacat.debug("ReplicationHandler.update - 'in xml_revisions' total query count: " + 
+                _xmlRevQueryCount);
+        logMetacat.debug("ReplicationHandler.update - 'in xml_revisions' total query time: " + 
+                _xmlRevQueryTime + " ms");;
+
+    } finally { // need to close all inputstreams unconditionally
+        Iterator<InputStream> isit = responses.iterator();
+        while (isit.hasNext()) {
+            IOUtils.closeQuietly(isit.next());
         }
-        //Add result to vector
-        responses.add(result);
     }
-    timeToGetServerList = System.currentTimeMillis() - startTimeToGetServers;
-
-    //make sure that there is updated file list
-    //If response is null, metacat don't need do anything
-    if (responses==null || responses.isEmpty())
-    {
-    	logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
-        logReplication.info( "ReplicationHandler.update - No updated doc list for "+
-                           "every server and failed to replicate");
-        return;
-    }
-
-
-    //logReplication.info("ReplicationHandler.update - Responses from remote metacat about updated "+
-    //               "document information: "+ responses.toString());
-    
-    long totalServerListParseTime = 0;
-    // go through response vector(it contains updated vector and delete vector
-    for(int i=0; i<responses.size(); i++)
-    {
-    	long startServerListParseTime = System.currentTimeMillis();
-    	XMLReader parser;
-    	ReplMessageHandler message = new ReplMessageHandler();
-    	try
-        {
-          parser = initParser(message);
-        }
-        catch (Exception e)
-        {
-          logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
-          logReplication.error("ReplicationHandler.update - Failed to replicate becaue couldn't " +
-                                " initParser for message and " +e.getMessage());
-           // stop replication
-           return;
-        }
-    	
-        try
-        {
-          parser.parse(new InputSource(responses.elementAt(i)));
-        }
-        catch(Exception e)
-        {
-          logMetacat.error("ReplicationHandler.update - " + ReplicationService.METACAT_REPL_ERROR_MSG);
-          logReplication.error("ReplicationHandler.update - Couldn't parse one responses "+
-                                   "because "+ e.getMessage());
-          continue;
-        }
-        //v is the list of updated documents
-        Vector<Vector<String>> updateList = new Vector<Vector<String>>(message.getUpdatesVect());
-        logReplication.info("ReplicationHandler.update - The document list size is "+updateList.size()+ " from "+message.getServerName());
-        //d is the list of deleted documents
-        Vector<Vector<String>> deleteList = new Vector<Vector<String>>(message.getDeletesVect());
-        logReplication.info("ReplicationHandler.update - Update vector size: "+ updateList.size()+" from "+message.getServerName());
-        logReplication.info("ReplicationHandler.update - Delete vector size: "+ deleteList.size()+" from "+message.getServerName());
-        logReplication.info("ReplicationHandler.update - The delete document list size is "+deleteList.size()+" from "+message.getServerName());
-        // go though every element in updated document vector
-        handleDocList(updateList, DocumentImpl.DOCUMENTTABLE);
-        //handle deleted docs
-        for(int k=0; k<deleteList.size(); k++)
-        { //delete the deleted documents;
-          Vector<String> w = new Vector<String>(deleteList.elementAt(k));
-          String docId = (String)w.elementAt(0);
-          try
-          {
-            handleDeleteSingleDocument(docId, server);
-          }
-          catch (Exception ee)
-          {
-            continue;
-          }
-        }//for delete docs
-        
-        // handle replicate doc in xml_revision
-        Vector<Vector<String>> revisionList = new Vector<Vector<String>>(message.getRevisionsVect());
-        logReplication.info("ReplicationHandler.update - The revision document list size is "+revisionList.size()+ " from "+message.getServerName());
-        handleDocList(revisionList, DocumentImpl.REVISIONTABLE);
-        DOCINSERTNUMBER = 1;
-        DOCERRORNUMBER  = 1;
-        REVINSERTNUMBER = 1;
-        REVERRORNUMBER  = 1;
-        
-        // handle system metadata
-        Vector<Vector<String>> systemMetadataList = message.getSystemMetadataVect();
-        for(int k = 0; k < systemMetadataList.size(); k++) { 
-        	Vector<String> w = systemMetadataList.elementAt(k);
-        	String guid = (String) w.elementAt(0);
-        	String remoteserver = (String) w.elementAt(1);
-        	try {
-        		handleSystemMetadata(remoteserver, guid);
-        	}
-        	catch (Exception ee) {
-        		logMetacat.error("Error replicating system metedata for guid: " + guid, ee);
-        		continue;
-        	}
-        }
-        
-        totalServerListParseTime += (System.currentTimeMillis() - startServerListParseTime);
-    }//for response
-
-    //updated last_checked
-    for (int i=0;i<serverList.size(); i++)
-    {
-       // Get ReplicationServer object from server list
-       replServer = serverList.serverAt(i);
-       try
-       {
-         updateLastCheckTimeForSingleServer(replServer);
-       }
-       catch(Exception e)
-       {
-         continue;
-       }
-    }//for
-    
-    long replicationEndTime = System.currentTimeMillis();
-    logMetacat.debug("ReplicationHandler.update - Total replication time: " + 
-    		(replicationEndTime - replicationStartTime));
-    logMetacat.debug("ReplicationHandler.update - time to get server list: " + 
-    		timeToGetServerList);
-    logMetacat.debug("ReplicationHandler.update - server list parse time: " + 
-    		totalServerListParseTime);
-    logMetacat.debug("ReplicationHandler.update - 'in xml_documents' total query count: " + 
-    		_xmlDocQueryCount);
-    logMetacat.debug("ReplicationHandler.update - 'in xml_documents' total query time: " + 
-    		_xmlDocQueryTime + " ms");
-    logMetacat.debug("ReplicationHandler.update - 'in xml_revisions' total query count: " + 
-    		_xmlRevQueryCount);
-    logMetacat.debug("ReplicationHandler.update - 'in xml_revisions' total query time: " + 
-    		_xmlRevQueryTime + " ms");;
-
-  }//update
+    }//update
 
   /* Handle replicate single xml document*/
   private void handleSingleXMLDocument(String remoteserver, String actions,
@@ -364,7 +390,8 @@ public class ReplicationHandler extends TimerTask
       URL u = new URL(readDocURLString);
 
       // Get docid content
-      String newxmldoc = ReplicationService.getURLContent(u);
+      byte[] xmlBytes = ReplicationService.getURLBytes(u);
+      String newxmldoc = new String(xmlBytes, "UTF-8");
       // If couldn't get skip it
       if ( newxmldoc.indexOf("<error>")!= -1 && newxmldoc.indexOf("</error>")!=-1)
       {
@@ -387,10 +414,10 @@ public class ReplicationHandler extends TimerTask
       // strip out the system metadata portion
       String systemMetadataXML = ReplicationUtil.getSystemMetadataContent(docInfoStr);
    	  docInfoStr = ReplicationUtil.getContentWithoutSystemMetadata(docInfoStr);
-      
+   	  SystemMetadata sysMeta = null;
    	  // process system metadata if we have it
       if (systemMetadataXML != null) {
-    	  SystemMetadata sysMeta = 
+    	  sysMeta = 
     		  TypeMarshaller.unmarshalTypeFromStream(
     				  SystemMetadata.class, 
     				  new ByteArrayInputStream(systemMetadataXML.getBytes("UTF-8")));
@@ -401,8 +428,7 @@ public class ReplicationHandler extends TimerTask
       	  // save the system metadata
     	  logReplication.debug("Saving SystemMetadata to shared map: " + sysMeta.getIdentifier().getValue());
       	  HazelcastService.getInstance().getSystemMetadataMap().put(sysMeta.getIdentifier(), sysMeta);
-      	  // submit for indexing
-          HazelcastService.getInstance().getIndexQueue().add(sysMeta);
+      	  
       }
    	  
       docinfoParser.parse(new InputSource(new StringReader(docInfoStr)));
@@ -423,86 +449,127 @@ public class ReplicationHandler extends TimerTask
       logReplication.info("ReplicationHandler.handleSingleXMLDocument - docid in repl: "+accNumber);
       String docType = docinfoHash.get("doctype");
       logReplication.info("ReplicationHandler.handleSingleXMLDocument - doctype in repl: "+docType);
-
-      String parserBase = null;
-      // this for eml2 and we need user eml2 parser
-      if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_0_0NAMESPACE))
-      {
-         parserBase = DocumentImpl.EML200;
-      }
-      else if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_0_1NAMESPACE))
-      {
-        parserBase = DocumentImpl.EML200;
-      }
-      else if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_1_0NAMESPACE))
-      {
-        parserBase = DocumentImpl.EML210;
-      }
-      else if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_1_1NAMESPACE))
-      {
-        parserBase = DocumentImpl.EML210;
-      }
-      // Write the document into local host
-      DocumentImplWrapper wrapper = new DocumentImplWrapper(parserBase, false, false);
-      String newDocid = wrapper.writeReplication(dbConn,
-                              newxmldoc,
-                              docinfoHash.get("public_access"),
-                              null,  /* the dtd text */
-                              actions,
-                              accNumber,
-                              null, //docinfoHash.get("user_owner"),                              
-                              null, /* null for groups[] */
-                              docHomeServer,
-                              remoteserver, tableName, true,// true is for time replication 
-                              createdDate,
-                              updatedDate);
       
-      //set the user information
-      String user = (String) docinfoHash.get("user_owner");
-      String updated = (String) docinfoHash.get("user_updated");
-      ReplicationService.updateUserOwner(dbConn, accNumber, user, updated);
-      
-      //process extra access rules 
-      try {
-      	// check if we had a guid -> docid mapping
-      	String docid = DocumentUtil.getDocIdFromAccessionNumber(accNumber);
-      	int rev = DocumentUtil.getRevisionFromAccessionNumber(accNumber);
-      	IdentifierManager.getInstance().getGUID(docid, rev);
-      	// no need to create the mapping if we have it
-      } catch (McdbDocNotFoundException mcdbe) {
-      	// create mapping if we don't
-      	IdentifierManager.getInstance().createMapping(accNumber, accNumber);
-      }
-      Vector<XMLAccessDAO> xmlAccessDAOList = dih.getAccessControlList();
-      if (xmlAccessDAOList != null) {
-      	AccessControlForSingleFile acfsf = new AccessControlForSingleFile(accNumber);
-      	for (XMLAccessDAO xmlAccessDAO : xmlAccessDAOList) {
-      		if (!acfsf.accessControlExists(xmlAccessDAO)) {
-      			acfsf.insertPermissions(xmlAccessDAO);
-      		}
+      NonXMLMetadataHandler handler = NonXMLMetadataHandlers.newNonXMLMetadataHandler(sysMeta.getFormatId());
+      if ( handler != null ) {
+          //non-xml objects route
+          try {
+              String user = (String) docinfoHash.get("user_owner");
+              int serverCode = DocumentImpl.getServerCode(docHomeServer);
+              logReplication.info("ReplicationHander.handleForceReplicateRequest - in the non-xml route, the user is " 
+                               + user + " for the identifier " + sysMeta.getIdentifier() + " and the docid " + accNumber +
+                               " with the check sume in the system metadata " + sysMeta.getChecksum().getValue() +
+                               ". The docment has the server code " + serverCode + " with home server " + docHomeServer);
+              ByteArrayInputStream source = new ByteArrayInputStream(xmlBytes);
+              String principal = null;
+              EventLogData event =  new EventLogData(getIpFromURL(u), "java", principal, accNumber, "create");
+              handler.saveReplication(source, accNumber, sysMeta, user, serverCode, remoteserver, event);
+              if(sysMeta != null) {
+                  MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
+              }
+          } catch (Exception e) {
+              HazelcastService.getInstance().getSystemMetadataMap().remove(sysMeta.getIdentifier());
+              throw e;
           }
+      } else {
+          String parserBase = null;
+          // this for eml2 and we need user eml2 parser
+          if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_0_0NAMESPACE))
+          {
+             parserBase = DocumentImpl.EML200;
+          }
+          else if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_0_1NAMESPACE))
+          {
+            parserBase = DocumentImpl.EML200;
+          }
+          else if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_1_0NAMESPACE))
+          {
+            parserBase = DocumentImpl.EML210;
+          }
+          else if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_1_1NAMESPACE))
+          {
+            parserBase = DocumentImpl.EML210;
+          } else if (docType != null && (docType.trim()).equals(DocumentImpl.EML2_2_0NAMESPACE)) {
+              parserBase = DocumentImpl.EML210;
+          }
+          
+          /*String formatId = null;
+          //get the format id from the system metadata 
+          if(sysMeta != null && sysMeta.getFormatId() != null) {
+              logMetacat.debug("ReplicationService.handleForceReplicateRequest - the format id will be got from the system metadata for the object "+accNumber);
+              formatId = sysMeta.getFormatId().getValue();
+          }*/
+          // Write the document into local host
+          DocumentImplWrapper wrapper = new DocumentImplWrapper(parserBase, false, false);
+          String newDocid = wrapper.writeReplication(dbConn,
+                                  newxmldoc, xmlBytes,
+                                  docinfoHash.get("public_access"),
+                                  null,  /* the dtd text */
+                                  actions,
+                                  accNumber,
+                                  null, //docinfoHash.get("user_owner"),                              
+                                  null, /* null for groups[] */
+                                  docHomeServer,
+                                  remoteserver, tableName, true,// true is for time replication 
+                                  createdDate,
+                                  updatedDate);
+          
+          if(sysMeta != null) {
+                // submit for indexing. When the doc writing process fails, the index process will fail as well. But this failure
+                // will not interrupt the process.
+                try {
+                    MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
+                } catch (Exception ee) {
+                    logReplication.warn("ReplicationService.handleForceReplicateRequest - couldn't index the doc since "+ee.getMessage());
+                }
+              
+            }
+          
+          //set the user information
+          String user = (String) docinfoHash.get("user_owner");
+          String updated = (String) docinfoHash.get("user_updated");
+          ReplicationService.updateUserOwner(dbConn, accNumber, user, updated);
+          
+          //process extra access rules 
+          try {
+            // check if we had a guid -> docid mapping
+            String docid = DocumentUtil.getDocIdFromAccessionNumber(accNumber);
+            int rev = DocumentUtil.getRevisionFromAccessionNumber(accNumber);
+            IdentifierManager.getInstance().getGUID(docid, rev);
+            // no need to create the mapping if we have it
+          } catch (McdbDocNotFoundException mcdbe) {
+            // create mapping if we don't
+            IdentifierManager.getInstance().createMapping(accNumber, accNumber);
+          }
+          Vector<XMLAccessDAO> xmlAccessDAOList = dih.getAccessControlList();
+          if (xmlAccessDAOList != null) {
+            AccessControlForSingleFile acfsf = new AccessControlForSingleFile(accNumber);
+            for (XMLAccessDAO xmlAccessDAO : xmlAccessDAOList) {
+                if (!acfsf.accessControlExists(xmlAccessDAO)) {
+                    acfsf.insertPermissions(xmlAccessDAO);
+                }
+              }
+          }
+          
+          
+          logReplication.info("ReplicationHandler.handleSingleXMLDocument - Successfully replicated doc " + accNumber);
+          if (tableName.equals(DocumentImpl.DOCUMENTTABLE))
+          {
+            logReplication.info("ReplicationHandler.handleSingleXMLDocument - " + DOCINSERTNUMBER + " Wrote xml doc " + accNumber +
+                                         " into "+tableName + " from " +
+                                             remoteserver);
+            DOCINSERTNUMBER++;
+          }
+          else
+          {
+              logReplication.info("ReplicationHandler.handleSingleXMLDocument - " +REVINSERTNUMBER + " Wrote xml doc " + accNumber +
+                      " into "+tableName + " from " +
+                          remoteserver);
+              REVINSERTNUMBER++;
+          }
+          String ip = getIpFromURL(u);
+          EventLog.getInstance().log(ip, null, ReplicationService.REPLICATIONUSER, accNumber, actions);
       }
-      
-      
-      logReplication.info("ReplicationHandler.handleSingleXMLDocument - Successfully replicated doc " + accNumber);
-      if (tableName.equals(DocumentImpl.DOCUMENTTABLE))
-      {
-        logReplication.info("ReplicationHandler.handleSingleXMLDocument - " + DOCINSERTNUMBER + " Wrote xml doc " + accNumber +
-                                     " into "+tableName + " from " +
-                                         remoteserver);
-        DOCINSERTNUMBER++;
-      }
-      else
-      {
-          logReplication.info("ReplicationHandler.handleSingleXMLDocument - " +REVINSERTNUMBER + " Wrote xml doc " + accNumber +
-                  " into "+tableName + " from " +
-                      remoteserver);
-          REVINSERTNUMBER++;
-      }
-      String ip = getIpFromURL(u);
-      EventLog.getInstance().log(ip, null, ReplicationService.REPLICATIONUSER, accNumber, actions);
-      
-
     }//try
     catch(Exception e)
     {
@@ -547,6 +614,7 @@ public class ReplicationHandler extends TimerTask
     logReplication.info("ReplicationHandler.handleSingleDataFile - Try to replicate data file: " + accNumber);
     DBConnection dbConn = null;
     int serialNumber = -1;
+    InputStream input = null;
     try
     {
       // Get DBConnection from pool
@@ -581,7 +649,7 @@ public class ReplicationHandler extends TimerTask
     	  // save the system metadata
     	  HazelcastService.getInstance().getSystemMetadataMap().put(sysMeta.getIdentifier(), sysMeta);
     	  // submit for indexing
-          HazelcastService.getInstance().getIndexQueue().add(sysMeta);
+          MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
 
       }
    	  
@@ -610,7 +678,7 @@ public class ReplicationHandler extends TimerTask
                                             "&action=readdata&docid="+accNumber;
       readDataURLString = MetacatUtil.replaceWhiteSpaceForURL(readDataURLString);
       URL u = new URL(readDataURLString);
-      InputStream input = ReplicationService.getURLStream(u);
+      input = ReplicationService.getURLStream(u);
       //register data file into xml_documents table and wite data file
       //into file system
       if ( input != null)
@@ -709,8 +777,11 @@ public class ReplicationHandler extends TimerTask
     }
     finally
     {
+       IOUtils.closeQuietly(input);
        //return DBConnection
        DBConnectionPool.returnDBConnection(dbConn, serialNumber);
+
+     
     }//finally
     logMetacat.info("replication.create localId:" + accNumber);
   }
@@ -880,7 +951,7 @@ public class ReplicationHandler extends TimerTask
 										.getBytes("UTF-8")));
 				HazelcastService.getInstance().getSystemMetadataMap().put(sysMeta.getIdentifier(), sysMeta);
 				// submit for indexing
-                HazelcastService.getInstance().getIndexQueue().add(sysMeta);
+                MetacatSolrIndex.getInstance().submit(sysMeta.getIdentifier(), sysMeta, null, true);
 			}
 
 			logReplication.info("ReplicationHandler.handleSystemMetadata - Successfully replicated system metadata for guid: "
@@ -999,7 +1070,7 @@ public class ReplicationHandler extends TimerTask
             //logMetacat.debug("publicID: " + publicId.toString());
             logReplication.info
                               ("ReplicationHandler.updateCatalog - v.elementAt(3): " + (String)v.elementAt(3));
-           if(!publicId.contains(v.elementAt(3)))
+           /*if(!publicId.contains(v.elementAt(3)))
            { //so we don't have this public id in our local table so we need to
              //add it.
         	   
@@ -1036,7 +1107,7 @@ public class ReplicationHandler extends TimerTask
              pstmt.close();
              logReplication.info("ReplicationHandler.updateCatalog - Success fully to insert new publicid "+
                                (String)v.elementAt(3) + " from server"+server);
-           }
+           }*/
         }
         catch(Exception e)
         {

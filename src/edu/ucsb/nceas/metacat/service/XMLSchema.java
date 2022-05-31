@@ -26,8 +26,10 @@
 
 package edu.ucsb.nceas.metacat.service;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
+import edu.ucsb.nceas.metacat.DocumentImpl;
 import edu.ucsb.nceas.metacat.util.SystemUtil;
 import edu.ucsb.nceas.utilities.FileUtil;
 import edu.ucsb.nceas.utilities.PropertyNotFoundException;
@@ -39,8 +41,13 @@ public class XMLSchema {
 	private String fileName = null;
 	private String localFileUri = null;
 	private String localFileDir = null;
+	private String formatId = null;
 	
-	private Logger logMetacat = Logger.getLogger(XMLSchema.class);
+	private static final String type = DocumentImpl.SCHEMA;
+	private static final String FILE_PROTOCOL = "file://";
+	
+
+    private Log logMetacat = LogFactory.getLog(XMLSchema.class);
 
 	/**
 	 * Constructor - the schema file name will be extracted from the external
@@ -52,9 +59,10 @@ public class XMLSchema {
 	 * @param externalFileUri
 	 *            the external uri where the schema is located
 	 */
-	public XMLSchema(String fileNamespace, String externalFileUri) {
+	public XMLSchema(String fileNamespace, String externalFileUri, String formatId) {
 		setFileNamespace(fileNamespace);
 		setExternalFileUri(externalFileUri);
+		setFormatId(formatId);
 	}
 	
 	/**
@@ -64,9 +72,9 @@ public class XMLSchema {
 	 * @param namespace
 	 *            the file's name space
 	 */
-	public XMLSchema(String fileNamespace) {
+	/*public XMLSchema(String fileNamespace) {
 		setFileNamespace(fileNamespace);
-	}
+	}*/
 	
 	/**
 	 * Set the file name. The local file uri and local file dir will also get
@@ -95,15 +103,7 @@ public class XMLSchema {
 		}
 			
 		this.fileName = fileName;
-		try { 
-			this.localFileUri = SystemUtil.getContextURL() + XMLSchemaService.SCHEMA_DIR
-					+ fileName;
-			logMetacat.debug("XMLSchema.setFileName - localFileUri: " + this.localFileUri);
-		} catch (PropertyNotFoundException pnfe) {
-			localFileUri = XMLSchemaService.SCHEMA_DIR + fileName;
-			logMetacat.warn("XMLSchema.setFileName - Could not get context url. Setting localFileUri to: "
-					+ localFileUri);
-		}
+		
 		try {
 			String fileDir = SystemUtil.getContextDir() + XMLSchemaService.SCHEMA_DIR
 				+ fileName;
@@ -114,6 +114,8 @@ public class XMLSchema {
 			logMetacat.warn("XMLSchema.setFileName - Could not get context directory. Setting localFileDir to: "
 					+ localFileDir);
 		}
+		localFileUri = FILE_PROTOCOL + localFileDir;
+		logMetacat.debug("XMLSchema.setFileName - Setting localFileUri to: "+ localFileUri);
 	}
 	
 	/**
@@ -172,10 +174,10 @@ public class XMLSchema {
 	 * @param localFileUri
 	 *            the base uri to set.
 	 */
-	public void setLocalFileUri(String localFileUri) {
+	/*public void setLocalFileUri(String localFileUri) {
 		if (!localFileUri.startsWith("http://")) {
 			try {
-				localFileUri = SystemUtil.getContextURL() + XMLSchemaService.SCHEMA_DIR + localFileUri;
+				localFileUri = SystemUtil.getInternalContextURL() + XMLSchemaService.SCHEMA_DIR + localFileUri;
 			} catch (PropertyNotFoundException pnfe) {
 				logMetacat.warn("XMLSchema.setLocalFileUri - Could not find context url: " + pnfe.getMessage() + 
 						". Setting schema file uri to: " + XMLSchemaService.SCHEMA_DIR + localFileUri);
@@ -183,7 +185,7 @@ public class XMLSchema {
 			}
 		}
 		this.localFileUri = localFileUri;
-	}
+	}*/
 	
 	/**
 	 * Gets the local file uri
@@ -202,4 +204,29 @@ public class XMLSchema {
 	public String getLocalFileDir() {
 		return localFileDir;
 	}
+	
+	
+	/**
+	 * Get the format id
+	 * @return the format id
+	 */
+	public String getFormatId() {
+        return formatId;
+    }
+
+	/**
+	 * Set the format id. 
+	 * @param formatId. 
+	 */
+    public void setFormatId(String formatId) {
+            this.formatId = formatId;
+    }
+    
+    /**
+     * Return the type of the schema. It always is "Schema"
+     * @return
+     */
+    public static String getType() {
+        return type;
+    }
 }

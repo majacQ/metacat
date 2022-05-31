@@ -28,6 +28,9 @@ package edu.ucsb.nceas.metacat.dataone.hazelcast;
 
 import java.io.FileNotFoundException;
 import java.sql.SQLException;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -36,10 +39,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.locks.Lock;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.dataone.service.exceptions.InvalidSystemMetadata;
 import org.dataone.service.types.v1.Identifier;
-import org.dataone.service.types.v1.SystemMetadata;
+import org.dataone.service.types.v2.SystemMetadata;
 
 import com.hazelcast.config.Config;
 import com.hazelcast.config.FileSystemXmlConfig;
@@ -62,6 +66,7 @@ import com.hazelcast.partition.PartitionService;
 
 import edu.ucsb.nceas.metacat.IdentifierManager;
 import edu.ucsb.nceas.metacat.McdbDocNotFoundException;
+import edu.ucsb.nceas.metacat.common.index.IndexTask;
 import edu.ucsb.nceas.metacat.common.index.event.IndexEvent;
 import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.shared.BaseService;
@@ -75,12 +80,10 @@ import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 public class HazelcastService extends BaseService
   implements EntryListener<Identifier, SystemMetadata>, MembershipListener, LifecycleListener, ItemListener<Identifier> {
   
-  private static final String SINCE_PROPERTY = "dateSysMetadataModified";
-
   private static final String MISSING_PID_PREFIX = "missing-";
 
 /* The instance of the logging class */
-  private static Logger logMetacat = Logger.getLogger(HazelcastService.class);
+  private static Log logMetacat = LogFactory.getLog(HazelcastService.class);
   
   /* The singleton instance of the hazelcast service */
   private static HazelcastService hzService = null;
@@ -105,7 +108,7 @@ public class HazelcastService extends BaseService
   
   /* The Hazelcast distributed index queue */
   private String hzIndexQueue;
-  private ISet<SystemMetadata> indexQueue;
+  private IMap<Identifier, IndexTask> indexQueue;
   
   /* The Hazelcast distributed index event map */
   private String hzIndexEventMap;
@@ -202,7 +205,7 @@ public class HazelcastService extends BaseService
 
       // for index tasks
       hzIndexQueue = PropertyService.getProperty("index.hazelcast.indexqueue");
-      indexQueue = this.hzInstance.getSet(hzIndexQueue);
+      indexQueue = this.hzInstance.getMap(hzIndexQueue);
 
       // for index events (failures)
       hzIndexEventMap = PropertyService.getProperty("index.hazelcast.indexeventmap");
@@ -259,7 +262,7 @@ public class HazelcastService extends BaseService
    * Get the index queue
    * @return the set of SystemMetadata to be indexed
    */
-  public ISet<SystemMetadata> getIndexQueue() {
+  public IMap<Identifier, IndexTask> getIndexQueue() {
       return indexQueue;
   }
   
@@ -563,7 +566,12 @@ public class HazelcastService extends BaseService
 			public void run() {
 				try {
 					// this is a push mechanism
+				    DateFormat dateFormat = new SimpleDateFormat("MMM dd, yyyy HH:mm:ss aaa");
+				    System.out.println(dateFormat.format(Calendar.getInstance().getTime())+" Start the hazelcast synchronization");
+				    logMetacat.warn("Start the hazelcast synchronization");
 					resynchToRemote();
+					System.out.println(dateFormat.format(Calendar.getInstance().getTime())+" End the hazelcast synchronization");
+					logMetacat.warn("End the hazelcast synchronization");
 				} catch (Exception e) {
 					logMetacat.error("Error in resynchInThread: " + e.getMessage(), e);
 				}
@@ -583,8 +591,7 @@ public class HazelcastService extends BaseService
 		logMetacat.debug("Member added to cluster: " + member.getInetSocketAddress());
 		boolean isLocal = member.localMember();
 		if (isLocal) {
-			logMetacat.debug("Member islocal: " + member.getInetSocketAddress());
-			synchronizeLocalStore();
+			logMetacat.info("Member islocal: " + member.getInetSocketAddress());
 		}
 	}
 

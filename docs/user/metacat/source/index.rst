@@ -2,7 +2,7 @@
 Metacat Administrator's Guide
 =============================
 
-.. sidebar:: Version: 2.3.0
+.. sidebar:: Version: |release|
 
     .. image:: themes/metacatui/static/metacat-logo-darkgray.png
        :height: 130pt
@@ -13,7 +13,9 @@ Metacat Administrator's Guide
 
     License: GPL
     
-    Release Date: September, 2013
+    Release Date: |today|
+
+.. role:: note2
 
 Metacat is a repository for data and metadata (documentation about data) that helps 
 scientists find, understand and effectively use data sets they manage or that 
@@ -23,31 +25,67 @@ community with a broad range of science data that--because the data are well and
 consistently described--can be easily searched, compared, merged, or used 
 in other ways.  
 
+:note2:`Note:` 
+
+An external Solr HTTP server is required as of Metacat version 2.13.0. You should add the ``tomcat8`` user to the ``solr`` group and the ``solr``  user to the ``tomcat8`` group in order to avoid the file permission issues. The details can be found on the `Solr Server`_ part of the installation page.
+
+If this is the first time you have installed an external Solr server, you need to re-index all existing objects in the Metacat instance. The instruction can be found on the `Regenerating The Index`_ part of the Metacat indexing page.
+
 - Download Metacat
 
     - Binary Distribution (A war file installation)
-        - GZIP File: metacat-bin-2.3.0.tar.gz_
-        - ZIP File: metacat-bin-2.3.0.zip_
+        - GZIP File: |bin-link-pre|\ |release|\ |bin-gz-link-post1|\ |release|\ |gz-link-post2|
+        - ZIP File: |bin-link-pre|\ |release|\ |bin-zip-link-post1|\ |release|\ |zip-link-post2|
     - Source Distribution (Full source, requiring build)
-        - GZIP File: metacat-src-2.3.0.tar.gz_
-        - ZIP File: metacat-src-2.3.0.zip_
+        - GZIP File: |src-link-pre|\ |release|\ |src-gz-link-post1|\ |release|\ |gz-link-post2|
+        - ZIP File: |src-link-pre|\ |release|\ |src-zip-link-post1|\ |release|\ |zip-link-post2|
     - `Older versions`_
+
+.. |bin-link-pre| raw:: html
+
+    <a href="https://knb.ecoinformatics.org/software/dist/metacat-bin-
+
+.. |bin-gz-link-post1| raw:: html
+
+    .tar.gz">metacat-bin-
+
+.. |gz-link-post2| raw:: html
+
+    .tar.gz</a>
     
+.. |bin-zip-link-post1| raw:: html
+
+    .zip">metacat-bin-
+
+.. |zip-link-post2| raw:: html
+
+    .zip</a>
+
+.. |src-link-pre| raw:: html
+
+    <a href="https://knb.ecoinformatics.org/software/dist/metacat-src-
+
+.. |src-gz-link-post1| raw:: html
+
+    .tar.gz">metacat-src-
+
+.. |src-zip-link-post1| raw:: html
+
+    .zip">metacat-src-
+   
 - For Developers: Metacat `API documentation`_
 
-.. _Administrators Guide: http://knb.ecoinformatics.org/software/metacat/MetacatAdministratorGuide.pdf
+.. _Administrators Guide: https://knb.ecoinformatics.org/software/metacat/MetacatAdministratorGuide.pdf
 
 .. _API documentation: ./api/index.html
 
-.. _metacat-bin-2.3.0.tar.gz: http://knb.ecoinformatics.org/software/dist/metacat-bin-2.3.0.tar.gz
+.. _Older versions: https://knb.ecoinformatics.org/software/dist/
 
-.. _metacat-bin-2.3.0.zip: http://knb.ecoinformatics.org/software/dist/metacat-bin-2.3.0.zip
+.. _Solr Server: ./install.html#solr-server
 
-.. _metacat-src-2.3.0.tar.gz: http://knb.ecoinformatics.org/software/dist/metacat-src-2.3.0.tar.gz
+.. _Regenerating The Index: ./query-index.html#regenerating-the-index
 
-.. _metacat-src-2.3.0.zip: http://knb.ecoinformatics.org/software/dist/metacat-src-2.3.0.zip
 
-.. _Older versions: http://knb.ecoinformatics.org/software/dist/
 
 Contents
 ========
@@ -64,13 +102,13 @@ Contents
    submitting
    query-index
    themes
+   authinterface
    geoserver
    replication
    harvester
    oaipmh
    event-logging
    sitemaps
-   authinterface
    metacat-properties
    development
 

@@ -26,6 +26,7 @@
 
 package edu.ucsb.nceas.metacat;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
@@ -48,9 +49,12 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
-import org.apache.log4j.Logger;
-import org.apache.log4j.PropertyConfigurator;
+import org.apache.commons.lang.StringEscapeUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.dataone.service.types.v1.Checksum;
 
+import edu.ucsb.nceas.metacat.common.query.EnabledQueryEngines;
 import edu.ucsb.nceas.metacat.database.DBConnection;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
 import edu.ucsb.nceas.metacat.database.DatabaseService;
@@ -76,7 +80,6 @@ import edu.ucsb.nceas.metacat.util.RequestUtil;
 import edu.ucsb.nceas.metacat.util.ResponseUtil;
 import edu.ucsb.nceas.metacat.util.SessionData;
 import edu.ucsb.nceas.metacat.util.SystemUtil;
-import edu.ucsb.nceas.metacat.workflow.WorkflowSchedulerClient;
 import edu.ucsb.nceas.utilities.FileUtil;
 import edu.ucsb.nceas.utilities.GeneralPropertyException;
 import edu.ucsb.nceas.utilities.PropertyNotFoundException;
@@ -260,6 +263,7 @@ public class MetaCatServlet extends HttpServlet {
     private static boolean _firstHalfInitialized = false;
     private static boolean _fullyInitialized = false;
     private MetacatHandler handler = null;
+    private static Log logMetacat = LogFactory.getLog(MetaCatServlet.class);
     
     // Constants -- these should be final in a servlet
     public static final String SCHEMALOCATIONKEYWORD = ":schemaLocation";
@@ -267,7 +271,6 @@ public class MetaCatServlet extends HttpServlet {
     public static final String EML2KEYWORD = ":eml";
     private static final String FALSE = "false";
     private static final String TRUE  = "true";
-    private static String LOG_CONFIG_NAME = null;
     public static final String APPLICATION_NAME = "metacat";
 	public static final String DEFAULT_ENCODING = "UTF-8";
     
@@ -275,7 +278,7 @@ public class MetaCatServlet extends HttpServlet {
      * Initialize the servlet by creating appropriate database connections
      */
     public void init(ServletConfig config) throws ServletException {
-    	Logger logMetacat = Logger.getLogger(MetaCatServlet.class);
+    
     	try {
     		if(_firstHalfInitialized) {
     			return;
@@ -291,9 +294,6 @@ public class MetaCatServlet extends HttpServlet {
             
             // Initialize the properties file
             String dirPath = ServiceService.getRealConfigDir();
-            
-            LOG_CONFIG_NAME = dirPath + "/log4j.properties";
-            PropertyConfigurator.configureAndWatch(LOG_CONFIG_NAME);
             
             // Register preliminary services
             ServiceService.registerService("PropertyService", PropertyService.getInstance(context));         
@@ -333,9 +333,6 @@ public class MetaCatServlet extends HttpServlet {
 	 *            the servlet context of MetaCatServlet
 	 */
 	public void initSecondHalf(ServletContext context) throws ServletException {
-		
-		Logger logMetacat = Logger.getLogger(MetaCatServlet.class);
-
 		try {			
 			ServiceService.registerService("DatabaseService", DatabaseService.getInstance());
 			
@@ -424,15 +421,15 @@ public class MetaCatServlet extends HttpServlet {
 			}
 			
 			System.setProperty("replication.logfile.name", replicationLogPath);			
-			PropertyConfigurator.configureAndWatch(LOG_CONFIG_NAME);
 			
 			SessionService.getInstance().unRegisterAllSessions();
 			
 	         //Initialize Metacat Handler
             handler = new MetacatHandler(timer);
 
-			handler.set_sitemapScheduled(false);
-			
+			// Turn on sitemaps if appropriate
+			initializeSitemapTask(handler);
+
 			// initialize the plugins
 			MetacatHandlerPluginManager.getInstance();
 			
@@ -476,15 +473,14 @@ public class MetaCatServlet extends HttpServlet {
 	 * Close all db connections from the pool
 	 */
     public void destroy() {
-    	Logger logMetacat = Logger.getLogger(MetaCatServlet.class);
-    	
-    	ServiceService.stopAllServices();
-    	
-        // Close all db connection
-        logMetacat.warn("MetaCatServlet.destroy - Destroying MetacatServlet");
-        timer.cancel();
-        IndexingQueue.getInstance().setMetacatRunning(false);
-        DBConnectionPool.release();
+        try {
+            ServiceService.stopAllServices();
+            logMetacat.warn("MetaCatServlet.destroy - Destroying MetacatServlet");
+        } finally {
+            timer.cancel();
+            IndexingQueue.getInstance().setMetacatRunning(false);
+            DBConnectionPool.release();
+        }
     }
     
     /** Handle "GET" method requests from HTTP clients */
@@ -507,7 +503,20 @@ public class MetaCatServlet extends HttpServlet {
 	 * Index the paths specified in the metacat.properties
 	 */
     private void checkIndexPaths() {
-        Logger logMetacat = Logger.getLogger(MetaCatServlet.class);
+    	logMetacat.debug("MetaCatServlet.checkIndexPaths - starting....");
+    	boolean needCheck = false;
+    	try {
+    	    needCheck = Boolean.parseBoolean(PropertyService.getProperty("dbquery.init.check.newpath"));
+    	} catch (Exception e) {
+    	    logMetacat.warn("MetaCatServlet.checkIndexPaths - we can't get the property value of \"dbquery.init.check.newpath\" and the default value \"false\" will be used since " + e.getMessage());
+    	}
+    	logMetacat.info("MetaCatServlet.checkIndexPaths - the final of needCheckInexPath value is " + needCheck);
+    	if(!EnabledQueryEngines.getInstance().isEnabled(EnabledQueryEngines.PATHQUERYENGINE) || !needCheck) {
+    		logMetacat.info("MetaCatServlet.checkIndexPaths - the pathquery is disabled or the property \"dbquery.init.check.newpath\" is set false, so it does nothing for checking path_index");
+            return;
+        }
+    	logMetacat.info("MetaCatServlet.checkIndexPaths - after checking is the pathquery enabled or not...");
+        
 
         Vector<String> pathsForIndexing = null;
         try {  
@@ -645,8 +654,6 @@ public class MetaCatServlet extends HttpServlet {
 	@SuppressWarnings("unchecked")
 	private void handleGetOrPost(HttpServletRequest request,
 			HttpServletResponse response) throws ServletException, IOException {
-		Logger logMetacat = Logger.getLogger(MetaCatServlet.class);
-
 		String requestEncoding = request.getCharacterEncoding();
 		if (requestEncoding == null) {
 			logMetacat.debug("null requestEncoding, setting to application default: " + DEFAULT_ENCODING);
@@ -677,6 +684,7 @@ public class MetaCatServlet extends HttpServlet {
 		// if we get here, metacat is configured.  If we have not completed the 
 		// second half of the initialization, do so now.  This allows us to initially
 		// configure metacat without a restart.
+		logMetacat.info("MetacatServlet.handleGetOrPost - the _fullyInitailzied value is "+_fullyInitialized);
 		if (!_fullyInitialized) {
 			initSecondHalf(request.getSession().getServletContext());
 		}
@@ -705,6 +713,9 @@ public class MetaCatServlet extends HttpServlet {
 			String ctype = request.getContentType();
 			
 			if (ctype != null && ctype.startsWith("multipart/form-data")) {
+			    if(isReadOnly(response)) {
+			        return;
+			    }
 				handler.handleMultipartForm(request, response);
 				return;
 			} 
@@ -735,6 +746,35 @@ public class MetaCatServlet extends HttpServlet {
 						skins[0] = skin;
 						params.put("qformat", skins);
 					}
+					
+					// attempt to redirect to metacatui (#view/{pid}) if not getting the raw XML
+					// see: https://projects.ecoinformatics.org/ecoinfo/issues/6546
+					if (skin != null && !skin.equals("xml")) {
+						String uiContext = PropertyService.getProperty("ui.context");
+						String docidNoRev = DocumentUtil.getSmartDocId(docidToRead);
+						if (docidNoRev != null) {
+						    int rev = DocumentUtil.getRevisionFromAccessionNumber(docidToRead);
+	                        String pid = null;
+	                        try {
+	                            pid = IdentifierManager.getInstance().getGUID(docidNoRev, rev);
+	                            response.sendRedirect(SystemUtil.getServerURL() + "/" + uiContext + "/#view/" + pid );
+	                            return;
+	                        } catch (McdbDocNotFoundException nfe) {
+	                            logMetacat.warn("Could not locate PID for docid: " + docidToRead, nfe);
+	                        }
+						} else {
+						    PrintWriter out = response.getWriter();
+                            response.setContentType("text/xml");
+                            out.println("<?xml version=\"1.0\"?>");
+                            out.println("<error>");
+                            out.println("The docid " + docidToRead + " doesn't match the format and doesn't exist.");
+                            out.println("</error>");
+                            out.close();
+                            return;
+						}
+					}
+					
+					// otherwise carry on as usual
 					handler.handleReadAction(params, request, response, "public", null, null);
 					return;
 				}
@@ -795,52 +835,80 @@ public class MetaCatServlet extends HttpServlet {
 
 			// handle login action
 			if (action.equals("login")) {
-				PrintWriter out = response.getWriter();
+				//PrintWriter out = response.getWriter();
+				Writer out = new OutputStreamWriter(response.getOutputStream(), DEFAULT_ENCODING);
 				handler.handleLoginAction(out, params, request, response);
 				out.close();
 
 				// handle logout action
 			} else if (action.equals("logout")) {
-				PrintWriter out = response.getWriter();
+				Writer out = new OutputStreamWriter(response.getOutputStream(), DEFAULT_ENCODING);
 				handler.handleLogoutAction(out, params, request, response);
 				out.close();
 
-				// handle shrink DBConnection request
+				// handle session validate request
 			} else if (action.equals("validatesession")) {
-				PrintWriter out = response.getWriter();
-				String idToValidate = null;
-				String idsToValidate[] = params.get("sessionid");
-				if (idsToValidate != null) {
-					idToValidate = idsToValidate[0];
-				} else {
-					// use the sessionid from the cookie
+				String token = request.getHeader("Authorization");
+				
+				// First check for a valid authentication token
+				if ( token != null && ! token.equals("") ) {
+					Writer out = new OutputStreamWriter(response.getOutputStream(), DEFAULT_ENCODING);
 					SessionData sessionData = RequestUtil.getSessionData(request);
-					if (sessionData != null) {
-						idToValidate = sessionData.getId();
+					
+					response.setContentType("text/xml");
+					out.write("<?xml version=\"1.0\"?>");
+					out.write("<validateSession><status>");
+					
+					if ( sessionData != null ) {
+						out.write("valid");
+						
+					} else {
+						out.write("invalid");
+						
 					}
-				}
-				SessionService.getInstance().validateSession(out, response, idToValidate);
-				out.close();
+					out.write("</status>");
+				    
+					if (sessionData != null) {
+						out.write("<userInformation>");
+						out.write("<name>");
+						out.write(sessionData.getUserName());
+						out.write("</name>");
+						out.write("<fullName>");
+						out.write(sessionData.getName());
+						out.write("</fullName>");
+						String[] groups = sessionData.getGroupNames();
+						if ( groups != null ) {
+							for(String groupName : groups) {
+							  out.write("<group>");
+							  out.write(groupName);
+							  out.write("</group>");
+							}
+						}
+						out.write("</userInformation>");
+					}
 
-				// handle shrink DBConnection request
-			} else if (action.equals("shrink")) {
-				PrintWriter out = response.getWriter();
-				boolean success = false;
-				// If all DBConnection in the pool are free and DBConnection
-				// pool
-				// size is greater than initial value, shrink the connection
-				// pool
-				// size to initial value
-				success = DBConnectionPool.shrinkConnectionPoolSize();
-				if (success) {
-					// if successfully shrink the pool size to initial value
-					out.println("DBConnection Pool shrunk successfully.");
-				}// if
-				else {
-					out.println("DBConnection pool not shrunk successfully.");
+					out.write("<sessionId>" + sessionId + "</sessionId></validateSession>");				
+					out.close();
+					
+				} else {
+					// With no token, validate the sessionid
+					Writer out = new OutputStreamWriter(response.getOutputStream(), DEFAULT_ENCODING);
+					String idToValidate = null;
+					String idsToValidate[] = params.get("sessionid");
+					if (idsToValidate != null) {
+						idToValidate = idsToValidate[0];
+						
+					} else {
+						// use the sessionid from the cookie
+						SessionData sessionData = RequestUtil.getSessionData(request);
+						if (sessionData != null) {
+							idToValidate = sessionData.getId();
+							
+						}
+					}
+					SessionService.getInstance().validateSession(out, response, idToValidate);
+					out.close();
 				}
-				// close out put
-				out.close();
 
 				// aware of session expiration on every request
 			} else {
@@ -855,6 +923,7 @@ public class MetaCatServlet extends HttpServlet {
 
 				logMetacat.info("MetaCatServlet.handleGetOrPost - The user is : " + userName);
 			}
+			
 			// Now that we know the session is valid, we can delegate the
 			// request to a particular action handler
 			if (action.equals("query")) {
@@ -900,19 +969,30 @@ public class MetaCatServlet extends HttpServlet {
 				handler.handleReadInlineDataAction(params, request, response, userName, password,
 						groupNames);
 			} else if (action.equals("insert") || action.equals("update")) {
+			    if(isReadOnly(response)) {
+                    return;
+                }
 				PrintWriter out = response.getWriter();
 				if ((userName != null) && !userName.equals("public")) {
+				    //formatid will be set null here since this is metacat api
+				    String formatId = null;
+				    Checksum checksum = null;//for Metacat API, we don't calculate the checksum
+				    File file = null;
 					handler.handleInsertOrUpdateAction(request.getRemoteAddr(), request.getHeader("User-Agent"), response, out, params, userName,
-							groupNames, true, true);
+							groupNames, true, true, null, formatId, checksum, file);
 				} else {
 					response.setContentType("text/xml");
 					out.println("<?xml version=\"1.0\"?>");
 					out.println("<error>");
-					out.println("Permission denied for user " + userName + " " + action);
+					String cleanMessage = StringEscapeUtils.escapeXml("Permission denied for user " + userName + " " + action);
+					out.println(cleanMessage);
 					out.println("</error>");
 				}
 				out.close();
 			} else if (action.equals("delete")) {
+			    if(isReadOnly(response)) {
+                    return;
+                }
 				PrintWriter out = response.getWriter();
 				if ((userName != null) && !userName.equals("public")) {
 					handler.handleDeleteAction(out, params, request, response, userName,
@@ -921,7 +1001,8 @@ public class MetaCatServlet extends HttpServlet {
 					response.setContentType("text/xml");
 					out.println("<?xml version=\"1.0\"?>");
 					out.println("<error>");
-					out.println("Permission denied for " + action);
+					String cleanMessage = StringEscapeUtils.escapeXml("Permission denied for " + action);
+					out.println(cleanMessage);
 					out.println("</error>");
 				}
 				out.close();
@@ -930,6 +1011,9 @@ public class MetaCatServlet extends HttpServlet {
 				handler.handleValidateAction(out, params);
 				out.close();
 			} else if (action.equals("setaccess")) {
+			    if(isReadOnly(response)) {
+                    return;
+                }
 				PrintWriter out = response.getWriter();
 				handler.handleSetAccessAction(out, params, userName, request, response);
 				out.close();
@@ -942,7 +1026,7 @@ public class MetaCatServlet extends HttpServlet {
 				DocumentUtil.isAuthorized(out, params, request, response);
 				out.close();
 			} else if (action.equals("getprincipals")) {
-				PrintWriter out = response.getWriter();
+				Writer out = new OutputStreamWriter(response.getOutputStream(), DEFAULT_ENCODING);
 				handler.handleGetPrincipalsAction(out, userName, password);
 				out.close();
 			} else if (action.equals("getdoctypes")) {
@@ -973,9 +1057,20 @@ public class MetaCatServlet extends HttpServlet {
 				out.close();
 			} else if (action.equals("getversion")) {
 				response.setContentType("text/xml");
-				PrintWriter out = response.getWriter();
-				out.println(MetacatVersion.getVersionAsXml());
-				out.close();
+				String version = null;
+				try {
+				    version = MetacatVersion.getVersionAsXml();
+				    PrintWriter out = response.getWriter();
+	                out.println(version);
+	                out.close();
+				} catch (SQLException e) {
+				    PrintWriter out = response.getWriter();
+				    out.println("<?xml version=\"1.0\"?>");
+                    out.println("<erorr>");
+                    out.println(StringEscapeUtils.escapeXml(e.getMessage()));
+                    out.println("</erorr>");
+                    out.close();
+				}
 			} else if (action.equals("getlog")) {
 				handler.handleGetLogAction(params, request, response, userName, groupNames, sessionId);
 			} else if (action.equals("getloggedinuserinfo")) {
@@ -1000,10 +1095,19 @@ public class MetaCatServlet extends HttpServlet {
 				out.println("\n</user>\n");
 				out.close();
 			} else if (action.equals("buildindex")) {
+			    if(isReadOnly(response)) {
+                    return;
+                }
 				handler.handleBuildIndexAction(params, request, response, userName, groupNames);
 			} else if (action.equals("reindex")) {
+			    if(isReadOnly(response)) {
+                    return;
+                }
 				handler.handleReindexAction(params, request, response, userName, groupNames);
 			} else if (action.equals("reindexall")) {
+			    if(isReadOnly(response)) {
+                    return;
+                }
                 handler.handleReindexAllAction(params, request, response, userName, groupNames);
             } else if (action.equals("login") || action.equals("logout")) {
 				/*
@@ -1041,77 +1145,49 @@ public class MetaCatServlet extends HttpServlet {
 				// to the MetacatAdminServlet
 				ServiceService.refreshService("XMLSchemaService");
 				return;
-			} else if (action.equals("scheduleWorkflow")) {
-				try {
-					WorkflowSchedulerClient.getInstance().scheduleJob(request, response,
-							params, userName, groupNames);
-					return;
-				} catch (BaseException be) {
-					ResponseUtil.sendErrorXML(response,
-							ResponseUtil.SCHEDULE_WORKFLOW_ERROR, be);
-					return;
-				}
-			} else if (action.equals("unscheduleWorkflow")) {
-				try {
-					WorkflowSchedulerClient.getInstance().unScheduleJob(request,
-							response, params, userName, groupNames);
-					return;
-				} catch (BaseException be) {
-					ResponseUtil.sendErrorXML(response,
-							ResponseUtil.UNSCHEDULE_WORKFLOW_ERROR, be);
-					return;
-				}
-			} else if (action.equals("rescheduleWorkflow")) {
-				try {
-					WorkflowSchedulerClient.getInstance().reScheduleJob(request,
-							response, params, userName, groupNames);
-					return;
-				} catch (BaseException be) {
-					ResponseUtil.sendErrorXML(response,
-							ResponseUtil.RESCHEDULE_WORKFLOW_ERROR, be);
-					return;
-				}
-			} else if (action.equals("getScheduledWorkflow")) {
-				try {
-					WorkflowSchedulerClient.getInstance().getJobs(request, response,
-							params, userName, groupNames);
-					return;
-				} catch (BaseException be) {
-					ResponseUtil.sendErrorXML(response,
-							ResponseUtil.GET_SCHEDULED_WORKFLOW_ERROR, be);
-					return;
-				}
-			} else if (action.equals("deleteScheduledWorkflow")) {
-				try {
-					WorkflowSchedulerClient.getInstance().deleteJob(request, response,
-							params, userName, groupNames);
-					return;
-				} catch (BaseException be) {
-					ResponseUtil.sendErrorXML(response,
-							ResponseUtil.DELETE_SCHEDULED_WORKFLOW_ERROR, be);
-					return;
-				}
-
+			} else if (action.equals("shrink")) {
+			     // handle shrink DBConnection request
+                PrintWriter out = response.getWriter();
+                if(!AuthUtil.isAdministrator(userName, groupNames)){
+                    out.println("The user "+userName+ " is not the administrator of the Metacat and doesn't have the permission to call the method.");
+                    out.close();
+                    return;
+                }
+                boolean success = false;
+                // If all DBConnection in the pool are free and DBConnection
+                // pool
+                // size is greater than initial value, shrink the connection
+                // pool
+                // size to initial value
+                success = DBConnectionPool.shrinkConnectionPoolSize();
+                if (success) {
+                    // if successfully shrink the pool size to initial value
+                    out.println("DBConnection Pool shrunk successfully.");
+                }// if
+                else {
+                    out.println("DBConnection pool did not shrink successfully.");
+                }
+                // close out put
+                out.close();
 			} else {
 				//try the plugin handler if it has an entry for handling this action
 				MetacatHandlerPlugin handlerPlugin = MetacatHandlerPluginManager.getInstance().getHandler(action);
 				if (handlerPlugin != null) {
+				    if(isReadOnly(response)) {
+	                    return;
+	                }
 					handlerPlugin.handleAction(action, params, request, response, userName, groupNames, sessionId);
 				} 
 				else {
 					PrintWriter out = response.getWriter();
 					out.println("<?xml version=\"1.0\"?>");
 					out.println("<error>");
-					out.println("Error: action: " + action + " not registered.  Please report this error.");
+					String cleanMessage = StringEscapeUtils.escapeXml("Error: action: " + action + " not registered.  Please report this error.");
+					out.println(cleanMessage);
 					out.println("</error>");
 					out.close();
 				}
 			}
-
-			// Schedule the sitemap generator to run periodically
-			handler.scheduleSitemapGeneration(request);
-
-
 		} catch (PropertyNotFoundException pnfe) {
 			String errorString = "Critical property not found: " + pnfe.getMessage();
 			logMetacat.error("MetaCatServlet.handleGetOrPost - " + errorString);
@@ -1146,4 +1222,33 @@ public class MetaCatServlet extends HttpServlet {
     public static boolean isFullyInitialized() {
     	return _fullyInitialized;
     }
+    
+    public static boolean isReadOnly(HttpServletResponse response) throws IOException {
+        boolean readOnly = false;
+        ReadOnlyChecker checker = new ReadOnlyChecker();
+        readOnly = checker.isReadOnly();
+        if(readOnly) {
+            PrintWriter out = response.getWriter();
+            response.setContentType("text/xml");
+            out.println("<?xml version=\"1.0\"?>");
+            out.println("<error>");
+            out.println("The Metacat is on the read-only mode and your request can't be fulfiled. Please try again later.");
+            out.println("</error>");
+            out.close();
+        }
+        return readOnly;
+		}
+		
+		public static void initializeSitemapTask(MetacatHandler handler) {
+			Boolean sitemap_enabled = false;
+
+			try {
+				sitemap_enabled = Boolean.parseBoolean(PropertyService.getProperty("sitemap.enabled"));
+			} catch (PropertyNotFoundException pnfe) {
+				logMetacat.info("sitemap.enabled property not found so sitemaps are disabled");
+			}
+			
+			// Schedule the sitemap generator to run periodically
+			handler.scheduleSitemapGeneration();
+		}
 }

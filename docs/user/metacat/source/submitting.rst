@@ -60,15 +60,31 @@ information about installing and configuring Apache to run with Tomcat).
 
 To install and run the Registry:
 
-1. Build the Metacat Perl client library:
 
-  ::
+1. Install the required system libraries using Ubuntu/Debian (instructions 
+   Red Hat in sidebar)
+         
+  * Install the libraries
 
-    cd $METACAT/src/perl/Metacat
-    perl Makefile.PL
-    sudo make
-    sudo make install
+    ::
 
+      sudo apt-get install ant libappconfig-perl libxml-libxml-perl \
+      libxml-libxslt-perl libtemplate-perl libcgi-session-perl \
+      build-essential libnet-ldap-perl libterm-readkey-perl \
+      libxml-dom-perl libsoap-lite-perl -y
+
+  * Install two more package using cpan 
+
+    ::
+    
+      sudo cpan -i Digest::SHA1
+      sudo cpan -i Config::Properties
+      sudo cpan -i Scalar::Util
+      sudo cpan -i Captcha:reCAPTCHA
+      sudo cpan -i DateTime
+      sudo cpan -i Crypt::JWT
+      sudo cpan -i Crypt::X509
+          
 .. sidebar:: Instructions for Red Hat (Alternate Step 2)
 
   * Install the libraries
@@ -117,39 +133,25 @@ To install and run the Registry:
       install MSERGEANT/XML-LibXSLT-1.58.tar.gz
       install Captcha:reCAPTCHA
       install DateTime
-      
+      install Crypt::JWT
+      install Crypt::X509
 
-2. Install the required system libraries using Ubuntu/Debian (instructions 
-   Red Hat in sidebar)
-         
-  * Install the libraries
 
-    ::
-
-      sudo apt-get install ant libappconfig-perl libxml-libxml-perl \
-      libxml-libxslt-perl libtemplate-perl libcgi-session-perl \
-      libdigest-sha1-perl libnet-ldap-perl libterm-readkey-perl \
-      libxml-dom-perl libsoap-lite-perl -y
-
-  * Install two more package using cpan 
-
-    ::
-    
-      sudo cpan -i Config::Properties
-      sudo cpan -i Scalar::Util
-      sudo cpan -i Captcha:reCAPTCHA
-      sudo cpan -i DateTime
-      
-
-3. Double-check that Metacat's temporary folder, application.tempDir, is 
+2. Double-check that Metacat's temporary folder, application.tempDir, is 
    writable by the apache user, usually www-data or apache. 
 
-4. Make sure that the following scripts (found in ``<tomcat-home>/webapps/metacat/cgi-bin``) 
+3. Make sure that the following scripts (found in ``<tomcat-home>/webapps/metacat/cgi-bin``) 
    are executable: register-dataset.cgi and ldapweb.cgi.
 
   ::
   
     sudo chmod +x <tomcat-home>/webapps/metacat/cgi-bin/*.cgi
+
+4. Ensure apache CGI module is enabled
+
+   ::
+  
+    sudo a2enmod cgid
 
 5. Restart Apache.
 
@@ -184,7 +186,7 @@ configuration page, uncheck the boxes beside any form elements that you do not
 wish to appear in the registry.
 
 Once you have saved your changes, you must restart Tomcat for them to come 
-into effect. To restart Tomcat, type: ``sudo /etc/init.d/tomcat6 restart`` or an 
+into effect. To restart Tomcat, type: ``sudo /etc/init.d/tomcat7 restart`` or an 
 equivalent command appropriate to your operating system. 
 
 .. figure:: images/screenshots/image037.jpg
@@ -324,8 +326,8 @@ please see :doc:`replication`.
 |                          | ``operator`` - the Boolean operator to apply to the query. Possible values are: union or intersect                                                                                                                                                                 |
 |                          | ``searchmode`` - the type of search to be performed. Possible values are: contains, starts-with, ends-with, equals, isnot-equal, greater-than, less-than, greater-than-equals, less-than-equals.                                                                   |
 |                          | ``anyfield`` - a free-text search variable. The value placed in this parameter will be searched for in any document in any node.                                                                                                                                   |
-|                          | ``pagesize`` – the number of search results to display on each search results page (e.g., 10). Used with pagestart. See section 4.3.4 for an example.                                                                                                              |
-|                          | ``pagestart`` – the displayed search results page (e.g, 1). Used with pagesize. See section 4.3.4 for an example.                                                                                                                                                  |
+|                          | ``pagesize`` - the number of search results to display on each search results page (e.g., 10). Used with pagestart. See section 4.3.4 for an example.                                                                                                              |
+|                          | ``pagestart`` - the displayed search results page (e.g, 1). Used with pagesize. See section 4.3.4 for an example.                                                                                                                                                  |
 +--------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | read                     | Get a document from the database and return it in the specified format. See Searching Metacat for an example.                                                                                                                                                      |
 |                          |                                                                                                                                                                                                                                                                    |

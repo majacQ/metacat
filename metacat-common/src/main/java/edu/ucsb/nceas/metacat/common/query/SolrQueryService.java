@@ -26,6 +26,7 @@ import java.util.Set;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.common.params.AppendedSolrParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
@@ -49,9 +50,12 @@ public abstract class SolrQueryService {
     protected static final String FILTERQUERY = "fq";
     protected static final String UNKNOWN = "Unknown";
     private static final String READPERMISSION = "readPermission";
+    private static final String CHANGEPERMISSION = "changePermission";
+    private static final String WRITEPERMISSION = "writePermission";
+    private static final String IS_PUBLIC = "isPublic";
     private static final String RIGHTSHOLDER = "rightsHolder";
-    private static final String OPENPARENTHESE = "(";
-    private static final String CLOSEPARENTHESE = ")";
+    private static final String OPENPARENTHESES = "(";
+    private static final String CLOSEPARENTHESES = ")";
     private static final String COLON = ":";
     private static final String OR = "OR";
     
@@ -81,10 +85,11 @@ public abstract class SolrQueryService {
      * is null, there will be no access rules for the query. This is for the embedded solr server.
      * @param query the query params. 
      * @param subjects the user's identity which sent the query
+     * @param method  the method such as GET, POST and et al will be used in this query. This only works for the HTTP Solr server.
      * @return the response
      * @throws Exception
      */
-    public abstract InputStream query(SolrParams query, Set<Subject>subjects) throws Exception;
+    public abstract InputStream query(SolrParams query, Set<Subject> subjects, SolrRequest.METHOD method) throws Exception;
     
     
   
@@ -96,7 +101,11 @@ public abstract class SolrQueryService {
      */
     public abstract Map<String, SchemaField> getIndexSchemaFields() throws Exception;
     
-    /**
+    public IndexSchema getSchema() {
+		return schema;
+	}
+
+	/**
      * Get the version of the solr server.
      * @return
      */
@@ -152,7 +161,7 @@ public abstract class SolrQueryService {
                 NamedList fq = new NamedList();
                 fq.add(FILTERQUERY, query.toString());
                 SolrParams fqParam = SolrParams.toSolrParams(fq);
-                append = new AppendedSolrParams(solrParams, fqParam);
+                append = AppendedSolrParams.wrapAppended(solrParams, fqParam);
             } else {
                 append = solrParams;
             }
@@ -170,18 +179,25 @@ public abstract class SolrQueryService {
                     if(subjectName != null && !subjectName.trim().equals("")) {
                         if(first) {
                             first = false;
-                            query.append(OPENPARENTHESE+READPERMISSION+COLON+"\""+subjectName+"\""+CLOSEPARENTHESE);
+                            query.append(OPENPARENTHESES + READPERMISSION + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
+                            query.append(OR + OPENPARENTHESES + WRITEPERMISSION + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
+                            query.append(OR + OPENPARENTHESES + CHANGEPERMISSION + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
                             if(!subjectName.equals(Constants.SUBJECT_PUBLIC) && !subjectName.equals(Constants.SUBJECT_AUTHENTICATED_USER)) {
-                                query.append(OR+OPENPARENTHESE+RIGHTSHOLDER+COLON+"\""+subjectName+"\""+CLOSEPARENTHESE);
+                                query.append(OR + OPENPARENTHESES + RIGHTSHOLDER + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
+                            } else if (subjectName.equals(Constants.SUBJECT_PUBLIC)) {
+                                query.append(OR + OPENPARENTHESES + IS_PUBLIC+COLON + "true" + CLOSEPARENTHESES);
                             }
                         } else {
-                            query.append(OR + OPENPARENTHESE+READPERMISSION+COLON+"\""+subjectName+"\""+CLOSEPARENTHESE);
+                            query.append(OR + OPENPARENTHESES + READPERMISSION + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
+                            query.append(OR + OPENPARENTHESES + WRITEPERMISSION + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
+                            query.append(OR + OPENPARENTHESES + CHANGEPERMISSION + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
                             if(!subjectName.equals(Constants.SUBJECT_PUBLIC) && !subjectName.equals(Constants.SUBJECT_AUTHENTICATED_USER)) {
-                                query.append(OR + OPENPARENTHESE+RIGHTSHOLDER+COLON+"\""+subjectName+"\""+CLOSEPARENTHESE);
+                                query.append(OR + OPENPARENTHESES + RIGHTSHOLDER + COLON + "\"" + subjectName + "\"" + CLOSEPARENTHESES);
+                            } else if (subjectName.equals(Constants.SUBJECT_PUBLIC)) {
+                                query.append(OR + OPENPARENTHESES + IS_PUBLIC + COLON + "true" + CLOSEPARENTHESES);
                             }
                         }
                     }
-                   
                 }
                
             }

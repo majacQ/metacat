@@ -32,7 +32,10 @@ import java.util.Vector;
 import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.configuration.ConfigurationException;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.dataone.configuration.Settings;
 
 import edu.ucsb.nceas.metacat.shared.BaseService;
 import edu.ucsb.nceas.metacat.shared.ServiceException;
@@ -69,7 +72,7 @@ public class PropertyService extends BaseService {
 
 	private static String RECOMMENDED_EXTERNAL_DIR = null;
 
-	private static Logger logMetacat = Logger.getLogger(PropertyService.class);
+	private static Log logMetacat = LogFactory.getLog(PropertyService.class);
 
 	/**
 	 * private constructor since this is a singleton
@@ -419,6 +422,20 @@ public class PropertyService extends BaseService {
 	 */
 	public static String getRecommendedExternalDir() {
 		return RECOMMENDED_EXTERNAL_DIR;
+	}
+	
+	/**
+	 * The properties on the Setting class isn't synchronized with the change the Metacat properties file. 
+	 * This method synchronizes (reloads) the properties' change to the Setting class when the property file was modified.
+	 */
+	public static void syncToSettings() throws GeneralPropertyException {
+	    try {
+	        Settings.getConfiguration();
+	        Settings.augmentConfiguration(CONFIG_FILE_PATH);
+	    } catch (ConfigurationException e) {
+	        e.printStackTrace();
+	        throw new GeneralPropertyException(e.getMessage());
+	    }
 	}
 
 }

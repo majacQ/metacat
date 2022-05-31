@@ -30,12 +30,16 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.net.MalformedURLException;
 import java.util.Hashtable;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.fileupload.FileItem;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import com.oreilly.servlet.multipart.FilePart;
 
@@ -55,7 +59,7 @@ public class MetacatUtil
     
     private static boolean debugErrorDisplayed = false;
     
-    private static Logger logMetacat = Logger.getLogger(MetacatUtil.class);
+    private static Log logMetacat = LogFactory.getLog(MetacatUtil.class);
 
     /**
      * Utility method to parse the query part of a URL into parameters. This
@@ -400,7 +404,7 @@ public class MetacatUtil
 	 *            the name of the file to be written to disk
 	 * @return tempFilePath a String containing location of temporary file
 	 */
-    public static File writeTempUploadFile (FilePart filePart, String fileName) throws IOException {
+    public static File writeTempUploadFile (FileItem fi, String fileName) throws Exception {
         File tempFile = null;
         String tempDirPath = null;
         try {
@@ -441,7 +445,8 @@ public class MetacatUtil
 
 		//tempFile = new File(tempDirPath, fileName);
 		tempFile = File.createTempFile("upload", ".tmp", tempDir);
-		fileSize = filePart.writeTo(tempFile);
+		fi.write(tempFile);
+		fileSize = fi.getSize();
 
 		if (fileSize == 0) {
 			logMetacat.warn("Uploaded file '" + fileName + "'is empty!");

@@ -62,18 +62,7 @@ import edu.ucsb.nceas.utilities.PropertyNotFoundException;
  * A JUnit test for testing Step class processing
  */
 public class MetaCatServletNetTest extends MCTestCase {
-	static {
-		try {		
-			metacatUrl = PropertyService.getProperty("test.metacatUrl");
-		} catch (PropertyNotFoundException pnfe) {
-			System.err.println("could not find metacat URL in MetacatServletNetTest: "
-					+ pnfe.getMessage());
-		} catch (Exception e) {
-			System.err.println("Exception in initialize option in MetacatServletNetTest: "
-					+ e.getMessage());
-		}
-	}
-
+	
 	private String serialNumber;
 	private static String sessionId;
 
@@ -117,7 +106,6 @@ public class MetaCatServletNetTest extends MCTestCase {
 		String serial = null;
 
 		TestSuite suite = new TestSuite();
-		suite.addTest(new MetaCatServletNetTest("initialize"));
 		suite.addTest(new MetaCatServletNetTest("testNCEASLoginFail"));
 		//Should put a login successfully at the end of login test
 		//So insert or update can have cookie.
@@ -149,16 +137,9 @@ public class MetaCatServletNetTest extends MCTestCase {
 		number = Math.random() * 100000;
 		serial = Integer.toString(((new Double(number)).intValue()));
 		suite.addTest(new MetaCatServletNetTest("testLogOut"));
+		suite.addTest(new MetaCatServletNetTest("testReadFile"));
 
 		return suite;
-	}
-
-	/**
-	 * Run an initial test that always passes to check that the test
-	 * harness is working.
-	 */
-	public void initialize() {
-		assertTrue(1 == 1);
 	}
 
 	/**
@@ -649,6 +630,21 @@ public class MetaCatServletNetTest extends MCTestCase {
         return result;
         
 
+	}
+	
+	
+	/**
+	 * Test to read a file from Metacat
+	 * @throws Exception
+	 */
+	public void testReadFile() throws Exception {
+	    String webapps = PropertyService.getProperty("application.deployDir");
+	    String context = PropertyService.getProperty("application.context");
+	    String docId = "file://" + webapps + "/" + context + "/schema/eml-2.2.0/eml.xsd";
+	    String qformat = "zip";
+	    assertTrue(!handleReadAction(docId, qformat));
+	    qformat = "knb";
+	    assertTrue(!handleReadAction(docId, qformat));
 	}
 
 }

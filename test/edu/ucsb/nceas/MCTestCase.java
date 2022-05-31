@@ -45,6 +45,7 @@ import junit.framework.TestCase;
 import org.apache.http.client.HttpClient;
 import org.apache.http.impl.client.DefaultHttpClient;
 
+import edu.ucsb.nceas.metacat.authentication.AuthFile;
 import edu.ucsb.nceas.metacat.client.InsufficientKarmaException;
 import edu.ucsb.nceas.metacat.client.Metacat;
 import edu.ucsb.nceas.metacat.client.MetacatException;
@@ -56,6 +57,7 @@ import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.shared.ServiceException;
 import edu.ucsb.nceas.metacat.util.DocumentUtil;
 import edu.ucsb.nceas.metacat.util.RequestUtil;
+import edu.ucsb.nceas.metacat.util.SystemUtil;
 import edu.ucsb.nceas.utilities.IOUtil;
 import edu.ucsb.nceas.utilities.PropertyNotFoundException;
 import edu.ucsb.nceas.utilities.SortedProperties;
@@ -72,6 +74,8 @@ public class MCTestCase
 	protected static String EML2_0_1 = "EML2_0_1";
 	protected static String EML2_1_0 = "EML2_1_0";
 	protected static String EML2_1_1 = "EML2_1_1";
+	protected static final String AUTHFILECLASSNAME = "edu.ucsb.nceas.metacat.authentication.AuthFile";
+	private static final String KNBUSERGOURP = "cn=knb-usr,o=NCEAS,dc=ecoinformatics,dc=org";
 
 	
 	protected boolean SUCCESS = true;
@@ -94,6 +98,12 @@ public class MCTestCase
 	protected static String password;
 	protected static String anotheruser;
 	protected static String anotherpassword;
+	private static String lteruser;
+	private static String lterpassword;
+	protected static String referraluser;
+	protected static String referralpassword;
+	protected static String piscouser;
+	protected static String piscopassword;
 	
 	protected static String metacatContextDir;
 	
@@ -108,11 +118,59 @@ public class MCTestCase
 		    String printDebugString = PropertyService.getProperty("test.printdebug");
 		    printDebug = Boolean.parseBoolean(printDebugString);
 
-		    metacatUrl = PropertyService.getProperty("test.metacatUrl");
+		    metacatUrl = SystemUtil.getServletURL();
+		    //System.out.println("The metacat url (servlet) is ==================== "+metacatUrl);
 			username = PropertyService.getProperty("test.mcUser");
 			password = PropertyService.getProperty("test.mcPassword");
 			anotheruser = PropertyService.getProperty("test.mcAnotherUser");
 			anotherpassword = PropertyService.getProperty("test.mcAnotherPassword");
+			lteruser = PropertyService.getProperty("test.lterUser");
+			lterpassword = PropertyService.getProperty("test.lterPassword");
+			referraluser = PropertyService.getProperty("test.referralUser");
+            referralpassword = PropertyService.getProperty("test.referralPassword");
+            piscouser = PropertyService.getProperty("test.piscoUser");
+            piscopassword = PropertyService.getProperty("test.piscoPassword");
+			String authenClass = PropertyService.getProperty("auth.class");
+			if(authenClass != null && authenClass.equals(AUTHFILECLASSNAME)) {
+			   
+			    //add those test users to the authentication file
+			    AuthFile authFile = new AuthFile();
+			    try {
+			        String description = null;
+                    authFile.addGroup(KNBUSERGOURP, description);
+                } catch (Exception e) {
+                    System.out.println("Couldn't add the group "+KNBUSERGOURP+" to the password file since "+e.getMessage());
+                }
+			    String[] groups = null;
+			    try {
+			        authFile.addUser(username, groups, password, null, null, null, null, null);
+			    } catch (Exception e) {
+			        System.out.println("Couldn't add the user "+username+" to the password file since "+e.getMessage());
+			    }
+			    
+			    try {
+			        String[] anotherGroup = {KNBUSERGOURP};
+                    authFile.addUser(anotheruser, anotherGroup, anotherpassword, null, null, null, null, null);
+                } catch (Exception e) {
+                    System.out.println("Couldn't add the user "+anotheruser+" to the password file since "+e.getMessage());
+                }
+			    try {
+                    authFile.addUser(lteruser, groups, lterpassword, null, null, null, null, null);
+                } catch (Exception e) {
+                    System.out.println("Couldn't add the user "+lteruser+" to the password file since "+e.getMessage());
+                }
+			    try {
+                    authFile.addUser(referraluser, groups, referralpassword, null, null, null, null, null);
+                } catch (Exception e) {
+                    System.out.println("Couldn't add the user "+referraluser+" to the password file since "+e.getMessage());
+                }
+			    
+			    try {
+                    authFile.addUser(piscouser, groups, piscopassword, null, null, null, null, null);
+                } catch (Exception e) {
+                    System.out.println("Couldn't add the user "+piscouser+" to the password file since "+e.getMessage());
+                }
+			}
 		} catch (IOException ioe) {
 			System.err.println("Could not read property file in static block: " 
 					+ ioe.getMessage());

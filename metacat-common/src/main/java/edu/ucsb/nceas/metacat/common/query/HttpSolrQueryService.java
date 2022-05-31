@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.Vector;
 
@@ -39,18 +40,26 @@ import javax.xml.xpath.XPathFactory;
 import org.apache.commons.codec.net.URLCodec;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.solr.client.solrj.impl.CommonsHttpSolrServer;
+import org.apache.lucene.util.Version;
+import org.apache.solr.client.solrj.SolrRequest;
+import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.client.solrj.impl.HttpSolrClient;
+import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.client.solrj.util.ClientUtils;
-
 import org.apache.solr.common.params.SolrParams;
+import org.apache.solr.core.SolrResourceLoader;
+import org.apache.solr.core.ConfigSetService;
 import org.apache.solr.core.SolrConfig;
 import org.apache.solr.schema.FieldType;
 import org.apache.solr.schema.IndexSchema;
+import org.apache.solr.schema.IndexSchemaFactory;
 import org.apache.solr.schema.SchemaField;
 import org.apache.solr.schema.TextField;
 import org.dataone.configuration.Settings;
 import org.dataone.service.exceptions.NotFound;
 import org.dataone.service.exceptions.NotImplemented;
+import org.dataone.service.exceptions.UnsupportedType;
+import org.dataone.service.types.v1.Identifier;
 import org.dataone.service.types.v1.Subject;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
@@ -60,6 +69,7 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+
 
 
 
@@ -80,18 +90,23 @@ public class HttpSolrQueryService extends SolrQueryService {
     private static final String TRUE = "true";
     
     private String solrServerBaseURL = null;
-    private CommonsHttpSolrServer httpSolrServer = null;
+    private HttpSolrClient httpSolrServer = null;
     private static Log log = LogFactory.getLog(HttpSolrQueryService.class);
     /**
      * Constructor
      * @param httpSolrServer
+     * @throws SAXException 
+     * @throws IOException 
+     * @throws ParserConfigurationException 
+     * @throws MalformedURLException 
      */
-    public HttpSolrQueryService(CommonsHttpSolrServer httpSolrServer) {
+    public HttpSolrQueryService(HttpSolrClient httpSolrServer) throws MalformedURLException, ParserConfigurationException, IOException, SAXException {
         if(httpSolrServer == null) {
             throw new NullPointerException("HttpSolrQueryService.constructor - The httpSolrServer parameter can't be null");
         }
         this.httpSolrServer = httpSolrServer;
         this.solrServerBaseURL = httpSolrServer.getBaseURL();
+        getIndexSchemaFieldFromServer();
     }
     
     /**
@@ -125,32 +140,27 @@ public class HttpSolrQueryService extends SolrQueryService {
      * since the transform needs the SolrCore. We have to open the solr url directly to get the InputStream.
      * @param query the query params. 
      * @param subjects the user's identity which sent the query. If the Subjects is null, there wouldn't be any access control.
+     * @param method  the method such as GET, POST and et al will be used in this query. This only works for the HTTP Solr server.
      * @return the response
      * @throws IOException 
      * @throws NotFound 
      * @throws Exception
      */
-    public  InputStream query(SolrParams query, Set<Subject>subjects) throws IOException, NotFound {
-        boolean xmlFormat = false;
-        String queryString = ClientUtils.toQueryString(query, xmlFormat);
-        log.info("==========HttpSolrQueryService.query - the query string after transforming from the SolrParams to the string "+queryString);
-        StringBuffer accessFilter = generateAccessFilterParamsString(subjects);
-        if(accessFilter != null && accessFilter.length() != 0) {
-            String accessStr = accessFilter.toString();
-            log.debug("==========HttpSolrQueryService.query - the access string is "+accessStr);
-            URLCodec urlCodec = new URLCodec();
-            accessStr = urlCodec.encode(accessStr, "UTF-8");
-            log.debug("==========HttpSolrQueryService.query - the access string after escape special characters string "+accessStr);
-            queryString = queryString+"&"+FILTERQUERY+"="+accessStr;
-           
+    public  InputStream query(SolrParams query, Set<Subject> subjects, SolrRequest.METHOD method) throws IOException, NotFound, UnsupportedType, SolrServerException {
+        InputStream inputStream = null;
+        String wt = query.get(WT);
+        query = appendAccessFilterParams(query, subjects);
+        SolrQueryResponseTransformer solrTransformer = new SolrQueryResponseTransformer(null);
+        // handle normal and skin-based queries
+        if (isSupportedWT(wt)) {
+            // just handle as normal solr query
+            //reload the core before query. Only after reloading the core, the query result can reflect the change made in metacat-index module.
+            QueryResponse response = httpSolrServer.query(query, method);
+            inputStream = solrTransformer.transformResults(query, response, wt);
+        } else {
+            throw new UnsupportedType("0000","HttpSolrQueryService.query - the wt type " + wt + " in the solr query is not supported");
         }
-        
-        
-        //queryString = ClientUtils.escapeQueryChars(queryString);
-        queryString = solrServerBaseURL+SELECTIONPHASE+queryString;
-        log.info("==========HttpSolrQueryService.query - the final url for querying the solr http server is "+queryString);
-        URL url = new URL(queryString);    
-        return url.openStream();
+        return inputStream;
         //throw new NotImplemented("0000", "HttpSolrQueryService - the method of  query(SolrParams query, Set<Subject>subjects) is not for the HttpSolrQueryService. We donot need to implemente it");
     }
     
@@ -200,9 +210,13 @@ public class HttpSolrQueryService extends SolrQueryService {
      * @throws SAXException
      */
     private void getIndexSchemaFieldFromServer() throws MalformedURLException, ParserConfigurationException, IOException, SAXException {
-        //System.out.println("get filed map from server (downloading files) ==========================");
-        SolrConfig config = new SolrConfig("dataone", new InputSource(getSolrConfig())); 
-        schema = new IndexSchema(config, "dataone", new InputSource(getSchema()));
+        log.debug("get filed map from server (downloading files) ==========================");
+        SolrResourceLoader loader = new SolrResourceLoader();
+        ConfigSetService service = null;
+        ConfigSetService.ConfigResource configureResource  = IndexSchemaFactory.getConfigResource(service, lookupSchema(), loader, "dataone");
+        Properties substitutableProperties = new Properties();
+        schema = new IndexSchema("dataone", configureResource,  Version.LUCENE_8_8_2, loader, substitutableProperties);
+        log.debug("Intialize the schema is +++++++++++++++++++++++++++++++++++++++++++++++++++" + schema);
         fieldMap = schema.getFields();
     }
     
@@ -250,14 +264,16 @@ public class HttpSolrQueryService extends SolrQueryService {
     private InputStream getSolrConfig() throws MalformedURLException, IOException {
         String solrConfigAppendix = Settings.getConfiguration().getString(SOLR_CONFIG_URLAPPENDIX);
         String configURL = solrServerBaseURL+solrConfigAppendix;
+        log.info("HttpSolrQueryService.getSolrConfig - the url of getting the solr configure file is "+configURL);
         return (new URL(configURL)).openStream();
     }
     /*
      * Get the schema InputStream from the url which is specified in the metacat.properties and transform it to a Document.
      */
-    private InputStream getSchema() throws MalformedURLException, IOException {
+    private InputStream lookupSchema() throws MalformedURLException, IOException {
         String schemaURLAppendix = Settings.getConfiguration().getString(SOLR_SCHEMA_URLAPPENDIX);
         String schemaURL = solrServerBaseURL+schemaURLAppendix;
+        log.info("HttpSolrQueryService.lookupSchema - the url of getting the solr configure file is "+schemaURL);
         return (new URL(schemaURL)).openStream();
     }
     
@@ -315,6 +331,21 @@ public class HttpSolrQueryService extends SolrQueryService {
         DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
         Document doc = dBuilder.parse(input);
         return doc;
+    }
+    
+    /**
+     * If there is a solr doc for the given id.
+     * @param id - the specified id.
+     * @return true if there is a solr doc for this id.
+     */
+    public boolean hasSolrDoc(Identifier id) throws ParserConfigurationException, SolrServerException, IOException, SAXException {
+    	boolean hasIt = false;
+    	if(id != null && id.getValue() != null && !id.getValue().trim().equals("") ) {
+    		SolrParams query = EmbeddedSolrQueryService.buildIdQuery(id.getValue());
+            QueryResponse response = httpSolrServer.query(query);
+            hasIt = EmbeddedSolrQueryService.hasResult(response);
+    	}
+    	return hasIt;
     }
     
  

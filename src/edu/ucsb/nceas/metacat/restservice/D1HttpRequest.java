@@ -25,12 +25,13 @@ package edu.ucsb.nceas.metacat.restservice;
 
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
-import java.util.Enumeration;
-import java.util.Map;
-import java.util.StringTokenizer;
 
 import javax.servlet.ServletRequest;
-import javax.servlet.http.*;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletRequestWrapper;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 /**
  * @author berkley
@@ -38,6 +39,7 @@ import javax.servlet.http.*;
  */
 public class D1HttpRequest extends HttpServletRequestWrapper
 {   
+    private static Log logMetacat = LogFactory.getLog(D1HttpRequest.class);
     /**
      * HttpServletRequestWrapper(HttpServletRequest request) 
      */
@@ -54,21 +56,22 @@ public class D1HttpRequest extends HttpServletRequestWrapper
     public String getPathInfo() 
     {
         String s = super.getPathInfo();
-        System.out.println("original pathInfo: " + s);
+        logMetacat.info("D1HttpRequest.getPathInfo - the orignial pathInfo: "+s);
         String reqUri = this.getRequestURI();
-        System.out.println("original requestURI: " + reqUri);
+        logMetacat.info("D1HttpRequest.getPathInfo - original requestURI: " + reqUri);
         String strip = this.getContextPath() + this.getServletPath();
-        System.out.println("stripping " + strip + " from requestURI");
+        logMetacat.debug("D1HttpRequest.getPathInfo - stripping "+ strip + " from requestURI");
         s = reqUri.substring(strip.length());
-        try
+        /*try
         {
             s = URLDecoder.decode(s, "UTF-8");
         }
         catch (UnsupportedEncodingException e)
         {
             s = URLDecoder.decode(s);
-        }
-        System.out.println("new pathinfo: " + s);
+        }*/
+        logMetacat.info("D1HttpRequest.getPathInfo - the new pathInfo which comes from requestURI is: " + s);
         return s;
     }
+    
 }

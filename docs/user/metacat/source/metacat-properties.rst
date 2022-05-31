@@ -45,6 +45,22 @@ Metacat Server Properties
 |                           |                                                                                          |                        |
 |                           | Default Value: 443                                                                       |                        |
 +---------------------------+------------------------------------------------------------------------------------------+------------------------+
+| .. _server-internalName:  |                                                                                          |                        |
+|                           |                                                                                          |                        |
+| server.internalName       | The internal network host name used to access Metacat. It is used to improve performance | localhost              |
+|                           | since it bypasses the external network interface to directly access files, e.g. schema   |                        |
+|                           | and style sheet files located within Metacat itself. The host name should not include    |                        |
+|                           | the protocol prefix (http://).                                                           |                        |
+|                           |                                                                                          |                        |
+|                           | Default Value: localhost                                                                 |                        |
++---------------------------+------------------------------------------------------------------------------------------+------------------------+
+| .. _server-internalPort:  |                                                                                          |                        |
+|                           |                                                                                          |                        |
+| server.internalPort       | The network port used to access Metacat for the internal server name.                    | 80                     |
+|                           | This is usually 80 if Apache Web server is running, and 8080 if Tomcat is running alone. |                        |
+|                           |                                                                                          |                        |
+|                           | Default Value: 80                                                                        |                        |
++---------------------------+------------------------------------------------------------------------------------------+------------------------+
 
 Application Properties
 ----------------------
@@ -144,12 +160,41 @@ others are managed with the properties configuration utility.
 |                                      |                                                                             |                               |
 |                                      | Default Value: /var/metacat/temporary                                       |                               |
 +--------------------------------------+-----------------------------------------------------------------------------+-------------------------------+
-| .. _solr.homeDir:                    |                                                                             |                               |
+
+Solr Properties
+----------------------
+
+Metacat's Solr properties are described below. Properties that can only 
+be edited manually in the ``metacat.properties`` file are marked. All 
+others are managed with the properties configuration utility.
+
++--------------------------------------+-----------------------------------------------------------------------------+-------------------------------+
+| Property                             | Description                                                                 | Example                       |
++======================================+=============================================================================+===============================+
+| .. _solr-baseURL:                    |                                                                             |                               |
 |                                      |                                                                             |                               |
-| solr.homeDir                         | The directory where the Metacat index component stores the SOLR index.      | /var/metacat/solr-home        |
-|                                      | The directory must be writable by the user that starts Tomcat.              |                               |
 |                                      |                                                                             |                               |
-|                                      | Default Value: /var/metacat/solr-home                                       |                               |
+| solr.baseURL                         | The URL of the Solr server which Metacat can access.                        | http://localhost:8983/solr    |
+|                                      |                                                                             |                               |
++--------------------------------------+-----------------------------------------------------------------------------+-------------------------------+
+| .. _solr-homeDir       :             |                                                                             |                               |
+|                                      |                                                                             |                               |
+| solr.homeDir                         | The Solr home directory (not to be confused with the Solr installation      | /var/metacat/solr-home2       |
+|                                      | directory) is where Solr manages core directories with index files.         |                               |
+|                                      | The directory must be writable by the user that starts the Solr service.    |                               |
+|                                      |                                                                             |                               |
++--------------------------------------+-----------------------------------------------------------------------------+-------------------------------+
+| .. _solr-coreName:                   |                                                                             |                               |
+|                                      |                                                                             |                               |
+| solr.coreName                        | The name of the Solr core which holds the index of the Metacat objects.     | metacat-index                 |
+|                                      |                                                                             |                               |
+|                                      |                                                                             |                               |
++--------------------------------------+-----------------------------------------------------------------------------+-------------------------------+
+| .. solr-env-script-path:             |                                                                             |                               |
+|                                      |                                                                             |                               |
+| solr.env.script.path                 | An environment specific include file overrides defaults used by the         |/etc/default/solr.in.sh        |
+|                                      | bin/solr script. Metacat modifies this file to add the solr.home as the     |                               |
+|                                      | default data directory. This file should be writable by the Tomcat user.    |                               |
 +--------------------------------------+-----------------------------------------------------------------------------+-------------------------------+
 
 Database Properties
@@ -324,19 +369,21 @@ file are marked. All others are managed with the properties configuration utilit
 
 Authorization and Authentication Properties
 
+.. _Authentication details: ./authinterface.html
+
 +-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
 | Property                          | Description                                                                   | Example                                       |
 +===================================+===============================================================================+===============================================+
 | .. _auth-class:                   |                                                                               |                                               |
 |                                   |                                                                               |                                               |
-| auth.class                        | The class used for user authentication. Currently, only the AuthLdap          | edu.ucsb.nceas.metacat.AuthLdap               |
-|                                   | class is included in the Metacat distribution.                                |                                               |
+| auth.class                        | The class used for user authentication. Currently, both the AuthFile and      | edu.ucsb.nceas.metacat.AuthLdap               |
+|                                   | AuthLdap classes are included in the Metacat distribution.                    |                                               |
 |                                   | Note: If you implement another authentication strategy by implementing a Java |                                               |
 |                                   | class that extends the AuthInterface interface and rebuilding Metacat,        |                                               |
 |                                   | change this property to the fully qualified class name of your custom         |                                               |
 |                                   | authentication mechanism.                                                     |                                               |
 |                                   |                                                                               |                                               |
-|                                   | Default Value: edu.ucsb.nceas.metacat.AuthLdap                                |                                               |
+|                                   | Default Value: edu.ucsb.nceas.metacat.authentication.AuthFile                 |                                               |
 +-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
 | auth.timeoutMinutes*              | The number of minutes that a user will stay logged in to Metacat              | 180                                           |
 |                                   | without any activity.                                                         |                                               |
@@ -349,6 +396,21 @@ Authorization and Authentication Properties
 |                                   | Metacat privileges. At least one user or group must be entered when           | cn=yourgroup,o=NCEAS,dc=ecoinformatics,dc=org |
 |                                   | Metacat is first installed and configured. All accounts must exist            |                                               |
 |                                   | in LDAP in order to continue with the configuration.                          |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _auth-user-management-url:     |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| auth.userManagementUrl            | A web page provides the user management such as creating a new user and       | https://identity.nceas.ucsb.edu               |
+|                                   | changing password.                                                            |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _auth-file-path:               |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| auth.file.path                    | The absolute path of the password file which stores the username/password     | /var/metacat/certs/password                   |
+|                                   | and users' information. This file is used for the file-based authentication   |                                               |
+|                                   | mechanism.                                                                    |                                               |
+|                                   |                                                                               |                                               |
+|                                   | Please see the `Authentication details`_ page for more information.           |                                               |
+|                                   |                                                                               |                                               |
+|                                   | Default Value: /var/metacat/certs/password                                    |                                               |
 +-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
 | .. _auth-url:                     |                                                                               |                                               |
 |                                   |                                                                               |                                               |
@@ -480,6 +542,69 @@ The EML Data Manager is also included for extended data-query operations. Note t
 |                                   |                                                                               |                                               |
 | datamanager.password              | The password for the Datamanager user                                         | datamananger                                  |
 |                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+
+ .. _ezid_properties:
+EZID Properties
+------------------------
+The EZID service assigning Digital Object Identifiers (DOIs) is included in the Metacat service. 
+
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| Property                          | Description                                                                   | Example                                       |
++===================================+===============================================================================+===============================================+
+| .. _guid.ezid.enabled:            |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| guid.ezid.enabled                 | The enabled status of the EZID service                                        | true                                          |
+|                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _guid.ezid.username:           |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| guid.ezid.username                | A registered user name in the EZID service                                    | apitest                                       |
+|                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _guid.ezid.password:           |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| guid.ezid.password                | The password for the user name                                                |                                               |
+|                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _guid.ezid.baseurl:            |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| guid.ezid.baseurl                 | The base ulr of the specified EZID service                                    | https://ezid.cdlib.org/                       |
+|                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _guid.ezid.doishoulder.1:      |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| guid.ezid.doishoulder.1           | The DOI shoulder associated with the EZId account                             | doi:10.5072/FK2                               |
+|                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+
+Sitemap Properties
+------------------------
+
+Metacat automatically generates sitemaps for all all publicly-readable datasets and stores them in the sitemaps subdirectory under Metacat's deployment directory.
+
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| Property                          | Description                                                                   | Example                                       |
++===================================+===============================================================================+===============================================+
+| .. _sitemap.enabled:              |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| sitemap.enabled                   | Whether or not sitemaps are enabled.                                          | true                                          |
+|                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _sitemap.interval:             |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| sitemap.interval                  | The interval, in milliseconds, between rebuilding the sitemap(s).             | 86400000 (24hrs)                              |
+|                                   |                                                                               |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _sitemap.location.base:        |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| sitemap.location.base             | Base part of the URLs for the location of the sitemap files and the sitemap.  | https://my-metacat.com                        |
+|                                   | index. Either full URL or absolute path. Trailing slash optional.             |                                               |
++-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
+| .. _sitemap.entry.base:           |                                                                               |                                               |
+|                                   |                                                                               |                                               |
+| sitemap.entry.base                | Base part of the URLs for the location entries in the sitemaps.               | https://my-metacat.com/dataset                |
+|                                   | Either full URL or absolute path. Trailing slash optional.                    |                                               |
 +-----------------------------------+-------------------------------------------------------------------------------+-----------------------------------------------+
 
 

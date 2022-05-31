@@ -48,7 +48,8 @@ import java.util.Hashtable;
 import java.util.Stack;
 import java.util.Vector;
 
-import org.apache.log4j.Logger;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
 
@@ -136,6 +137,8 @@ public class Eml200SAXHandler extends DBSAXHandler implements
     // we find an 'access' element inside an 'additionalMetadata' element.  Set back
     // to false in endElement
     private boolean processOtherAccess = false;
+    
+    private Vector<String> guidsToSync;
 
     // if we are inside an 'access' element, we use this object to hold the 
     // current access info
@@ -298,7 +301,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
         + "when they don't have write permission!";
 
     private static final String UPDATEACCESSERROR = "User tried to update an "
-        + "access module when they don't have \"ALL\" permission!";
+        + "access module when they don't have \"ALL\" permission on the object ";
 
     public static final String TOPLEVEL = "top";
 
@@ -312,7 +315,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
 
     private static final String DISTRIBUTION = "distribution";
 
-    private Logger logMetacat = Logger.getLogger(Eml200SAXHandler.class);   	   	
+    private Log logMetacat = LogFactory.getLog(Eml200SAXHandler.class);   	   	
     
     /**
      * Construct an instance of the handler class In this constructor, user can
@@ -331,10 +334,11 @@ public class Eml200SAXHandler extends DBSAXHandler implements
      */
     public Eml200SAXHandler(DBConnection conn, String action, String docid,
             String revision, String user, String[] groups, String pub,
-            int serverCode, Date createDate, Date updateDate, boolean writeAccessRules) throws SAXException
+            int serverCode, Date createDate, Date updateDate, boolean writeAccessRules, Vector<String> guidsToSync) throws SAXException
     {
         super(conn, action, docid, revision, user, groups, pub, 
                 serverCode, createDate, updateDate, writeAccessRules);
+		this.guidsToSync = guidsToSync;
         // Get the unchangable subtrees (user doesn't have write permission)
         try
         {
@@ -349,10 +353,11 @@ public class Eml200SAXHandler extends DBSAXHandler implements
     			
     			PermissionController control = new PermissionController(previousDocid);
             	
-            	 // If the action is update and user doesn't have "ALL" permission
+            	 // If the action is update and user doesn't have "ALL" or "CHMOD" permission
                 // we need to check if user update access subtree
-            	if ( !control.hasPermission(user, groups, AccessControlInterface.ALLSTRING) 
-                        && !AuthUtil.isAdministrator(user, groups)) {
+            	if ( !control.hasPermission(user, groups, AccessControlInterface.ALLSTRING)
+            			&& !control.hasPermission(user, groups, AccessControlInterface.CHMODSTRING)
+                        && !AuthUtil.isAdministrator(user, groups) && writeAccessRules) {
                 		
                     needToCheckAccessModule = true;
                     topAccessSubTreeFromDB = getTopAccessSubTreeFromDB();
@@ -407,7 +412,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
             // Bind the values to the query
             pstmt.setString(1, docid);
             pstmt.setString(2, TOPLEVEL);
-            logMetacat.debug("Eml200SAXHandler.getTopAccessSubTreeFromDB - executing SQL: " + pstmt.toString());
+            logMetacat.trace("Eml200SAXHandler.getTopAccessSubTreeFromDB - executing SQL: " + pstmt.toString());
             pstmt.execute();
 
             // Get result set
@@ -594,9 +599,9 @@ public class Eml200SAXHandler extends DBSAXHandler implements
         // for element <eml:eml...> qname is "eml:eml", local name is "eml"
         // for element <acl....> both qname and local name is "eml"
         // uri is namesapce
-        logMetacat.debug("Start ELEMENT(qName) " + qName);
-        logMetacat.debug("Start ELEMENT(localName) " + localName);
-        logMetacat.debug("Start ELEMENT(uri) " + uri);
+        logMetacat.trace("Start ELEMENT(qName) " + qName);
+        logMetacat.trace("Start ELEMENT(localName) " + localName);
+        logMetacat.trace("Start ELEMENT(uri) " + uri);
 
         DBSAXNode parentNode = null;
         DBSAXNode currentNode = null;
@@ -822,9 +827,9 @@ public class Eml200SAXHandler extends DBSAXHandler implements
               if (attributeName != null
                       && attributeName
                               .indexOf(MetaCatServlet.SCHEMALOCATIONKEYWORD) != -1) {
-                  SchemaLocationResolver resolver = new SchemaLocationResolver(
+                  /*SchemaLocationResolver resolver = new SchemaLocationResolver(
                           attributeValue);
-                  resolver.resolveNameSpace();
+                  resolver.resolveNameSpace();*/
 
               }
               else if (attributeName != null && attributeName.equals(ID) &&
@@ -1713,16 +1718,24 @@ public class Eml200SAXHandler extends DBSAXHandler implements
      * topLevel, additionalLevel(data access) and referenced access module*/
     private void compareAllAccessModules() throws SAXException
     {
+        String guid = docid+"."+revision;
+        try {
+            guid = IdentifierManager.getInstance().getGUID(docid, Integer.valueOf(revision));
+        } catch (Exception e) {
+            logMetacat.warn("Eml200SAXHandler.compareAllAccessModules - we can't get object identifier for metacat id "+guid);
+        }
       //compare top level
-      compareAccessSubtree(topAccessSubTreeFromDB, topAccessSection);
+      compareAccessSubtree(topAccessSubTreeFromDB, topAccessSection, guid);
 
       //compare additional level
       int oldSize = additionalAccessSubTreeListFromDB.size();
       int newSize = additionalAccessVector.size();
+     
+      
       // if size is different, use deleted or added rules, so throw a exception
       if (oldSize != newSize)
       {
-        throw new SAXException(UPDATEACCESSERROR);
+        throw new SAXException(UPDATEACCESSERROR+guid);
       }
       //because access modules are both ordered in ASC in vectors, so we can
       // compare one bye one
@@ -1732,7 +1745,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
                           additionalAccessSubTreeListFromDB.elementAt(i);
         AccessSection fromParser = (AccessSection)
                                 additionalAccessVector.elementAt(i);
-        compareAccessSubtree(fromDB, fromParser);
+        compareAccessSubtree(fromDB, fromParser, guid);
       }
 
       //compare referenced level
@@ -1744,7 +1757,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
                                referencedAccessSubTreeListFromDB.get(id);
         AccessSection fromParser = (AccessSection)
                                possibleReferencedAccessHash.get(id);
-        compareAccessSubtree(fromDB, fromParser);
+        compareAccessSubtree(fromDB, fromParser, guid);
       }
     }
 
@@ -1753,12 +1766,12 @@ public class Eml200SAXHandler extends DBSAXHandler implements
      * compare the parsed result
      */
     private void compareAccessSubtree(AccessSection fromDBTable,
-                                       AccessSection fromParser)
+                                       AccessSection fromParser, String identifier)
                                       throws SAXException
     {
        if (fromDBTable == null || fromParser == null)
        {
-         throw new SAXException(UPDATEACCESSERROR);
+         throw new SAXException(UPDATEACCESSERROR+identifier);
        }
        Stack nodeStackFromDBTable = fromDBTable.getSubTreeNodeStack();
        Stack nodeStackFromParser  = fromParser.getStoredTmpNodeStack();
@@ -1767,17 +1780,17 @@ public class Eml200SAXHandler extends DBSAXHandler implements
        while(!nodeStackFromDBTable.isEmpty()){
            tempStack.push(nodeStackFromDBTable.pop());
        }
-       comparingNodeStacks(tempStack, nodeStackFromParser);
+       comparingNodeStacks(tempStack, nodeStackFromParser, identifier);
     }
 
     /* Compare two node stacks to see if they are same */
-  private void comparingNodeStacks(Stack stack1, Stack stack2)
+  private void comparingNodeStacks(Stack stack1, Stack stack2, String identifier)
           throws SAXException
   {
       // make sure stack1 and stack2 are not empty
       if (stack1.isEmpty() || stack2.isEmpty()) {
           logMetacat.info("Because stack is empty!");
-          throw new SAXException(UPDATEACCESSERROR);
+          throw new SAXException(UPDATEACCESSERROR+identifier);
       }
       // go throw two stacks and compare every element
       while (!stack1.isEmpty()) {
@@ -1792,13 +1805,13 @@ public class Eml200SAXHandler extends DBSAXHandler implements
 
               logMetacat.error(
                       "Node stack2 is empty but stack1 isn't!");
-              throw new SAXException(UPDATEACCESSERROR);
+              throw new SAXException(UPDATEACCESSERROR+identifier);
           }
           // if two records are not same throw a exception
           if (!record1.contentEquals(record2)) {
               logMetacat.info("Two records from new and old stack are not "
                                       + "same!" + record1 + "--" +record2);
-              throw new SAXException(UPDATEACCESSERROR);
+              throw new SAXException(UPDATEACCESSERROR+identifier);
           }//if
       }//while
 
@@ -1808,7 +1821,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
           logMetacat.info(
                   "stack2 still have some elements while stack1 "
                           + "is empty! ");
-          throw new SAXException(UPDATEACCESSERROR);
+          throw new SAXException(UPDATEACCESSERROR+identifier);
       }//if
   }//comparingNodeStacks
 
@@ -1940,7 +1953,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
    }
 
 
-  /* The method to write top level access rule into db. The old rules will be
+  /* The method to write additional access rule into db. The old rules will be
    * deleted
    * If no describedId in the access object, this access rules will be ingorned
    */
@@ -1997,6 +2010,19 @@ public class Eml200SAXHandler extends DBSAXHandler implements
                                    "xml_access table for"+ inlineFileName);
              writeGivenAccessRuleIntoDB(permOrder, accessRule,
                                         inlineFileName, subreeid);
+             // Save guid of data object for syncing of access policy with CN after parsing
+             // is successful (see DocumentImpl.write)
+             // look-up pid assuming docid
+             String dataGuid = inlineFileName;
+             try {
+	             String dataDocid = DocumentUtil.getDocIdFromAccessionNumber(inlineFileName);
+	             int dataRev = DocumentUtil.getRevisionFromAccessionNumber(inlineFileName);
+	             dataGuid = IdentifierManager.getInstance().getGUID(dataDocid, dataRev);
+             } catch (McdbDocNotFoundException e) {
+            	 // log the warning
+            	 logMetacat.warn("No pid found for [assumed] data docid: " + inlineFileName);
+             }
+ 			 guidsToSync.add(dataGuid);
            }
            else if (onlineURLDistributionIdList.containsKey(subreeid))
            {
@@ -2017,6 +2043,19 @@ public class Eml200SAXHandler extends DBSAXHandler implements
                                           dataFileName, null);
                logMetacat.info("Write online data access into " +
                                    "xml_access table for " + dataFileName);
+               // Save guid of data object for syncing of access policy with CN after parsing
+               // is successful (see DocumentImpl.write)
+               // look-up pid assuming docid
+               String dataGuid = dataFileName;
+               try {
+  	             String dataDocid = DocumentUtil.getDocIdFromAccessionNumber(dataFileName);
+  	             int dataRev = DocumentUtil.getRevisionFromAccessionNumber(dataFileName);
+  	             dataGuid = IdentifierManager.getInstance().getGUID(dataDocid, dataRev);
+               } catch (McdbDocNotFoundException e) {
+              	 // log the warning
+              	 logMetacat.warn("No pid found for [assumed] data docid: " + dataFileName);
+               }
+               guidsToSync.add(dataGuid);
                // put the id into a hashtalbe. So when we run wirtetop level
                // access, those id will be ignored because they already has
                // additional access rules
@@ -2371,7 +2410,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
             logMetacat.info("Start node id is: " + startNodeId);
             pstmt.setLong(6, endNodeId);
             logMetacat.info("End node id is: " + endNodeId);
-            logMetacat.debug("Eml200SAXHandler.writeAccessSubTreeIntoDB - executing SQL: " + pstmt.toString());
+            logMetacat.trace("Eml200SAXHandler.writeAccessSubTreeIntoDB - executing SQL: " + pstmt.toString());
             pstmt.execute();
             pstmt.close();
         }//try
@@ -2633,7 +2672,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
             //bind variable
             pStmt.setString(1, docid);
             //execute query
-            logMetacat.debug("Eml200SAXHandler.deleteRelations - executing SQL: " + pStmt.toString());
+            logMetacat.trace("Eml200SAXHandler.deleteRelations - executing SQL: " + pStmt.toString());
             pStmt.execute();
             pStmt.close();
         }//try
@@ -2670,7 +2709,7 @@ public class Eml200SAXHandler extends DBSAXHandler implements
             pStmt.setString(4, RELATION);
             pStmt.setString(5, dataId);
             //execute query
-            logMetacat.debug("Eml200SAXHandler.writeOnlineDataFileIdIntoRelationTable - executing SQL: " + pStmt.toString());
+            logMetacat.trace("Eml200SAXHandler.writeOnlineDataFileIdIntoRelationTable - executing SQL: " + pStmt.toString());
             pStmt.execute();
             pStmt.close();
         }//try
@@ -2751,13 +2790,16 @@ public class Eml200SAXHandler extends DBSAXHandler implements
           String previousDocid = 
         	  docid + PropertyService.getProperty("document.accNumSeparator") + previousRevision;
           PermissionController controller = new PermissionController(previousDocid);
-          if (controller.hasPermission(user, groups, AccessControlInterface.ALLSTRING)) {
-            return guid;
-          }
-          else
-          {
-            throw new SAXException("User: " + user + " does not have permission to update " +
+          if(writeAccessRules) {
+              if (controller.hasPermission(user, groups, AccessControlInterface.ALLSTRING)
+        		  || controller.hasPermission(user, groups, AccessControlInterface.CHMODSTRING)) {
+                  return guid;
+              }
+              else
+              {
+                  throw new SAXException("User: " + user + " does not have permission to update " +
                   "access rules for data file "+ guid);
+              }
           }
         }//try
         catch(Exception e)

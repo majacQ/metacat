@@ -24,13 +24,17 @@
 
 package edu.ucsb.nceas.metacattest;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Vector;
 
 import edu.ucsb.nceas.MCTestCase;
 import edu.ucsb.nceas.metacat.database.DBConnectionPool;
+import edu.ucsb.nceas.metacat.properties.PropertyService;
 import edu.ucsb.nceas.metacat.Sitemap;
 import edu.ucsb.nceas.metacat.client.MetacatAuthException;
 import edu.ucsb.nceas.metacat.client.MetacatInaccessibleException;
@@ -43,7 +47,8 @@ import edu.ucsb.nceas.utilities.FileUtil;
  */
 public class SitemapTest extends MCTestCase {
 
-    private String directoryName = "/tmp/sitemaps";
+	// Temp dir for storing the sitemaps we're about to generate
+    private Path sitemapTempDir;
 
     /**
      * Initialize the Metacat environment so the test can run.
@@ -51,16 +56,17 @@ public class SitemapTest extends MCTestCase {
     protected void setUp() throws Exception {
         super.setUp();
 
-        DBConnectionPool pool = DBConnectionPool.getInstance();
-        
+		DBConnectionPool pool = DBConnectionPool.getInstance();
 		metacatConnectionNeeded = true;
-		super.setUp();
-    }
+		sitemapTempDir = Files.createTempDirectory("sitemap");
 
-    /**
-     * Test the static generateSitemaps() method.
-     */
-    public void testGenerateSitemaps() {	
+		super.setUp();
+	}
+
+	/**
+	 * Test the static generateSitemaps() method.
+	 */
+		public void testGenerateSitemaps() {
     	try {
 			debug("\nRunning: testGenerateSitemaps()");
 
@@ -68,7 +74,7 @@ public class SitemapTest extends MCTestCase {
 			debug("logging in as: username=" + username + " password=" + password);
 			m.login(username, password);
 
-			// insert 2.0.1 document
+			// insert 2.0.1 document w/o public read (shouldn't show up in sitemap)
 			String docid1 = generateDocumentId();
 			debug("inserting docid: " + docid1 + ".1 which has no access section");
 			testdocument = getTestEmlDoc("Doc with no access section", EML2_0_1, null,
@@ -76,6 +82,7 @@ public class SitemapTest extends MCTestCase {
 			insertDocumentId(docid1 + ".1", testdocument, SUCCESS, false);
 			readDocumentIdWhichEqualsDoc(docid1, testdocument, SUCCESS, false);
 
+			// insert 2.0.1 document w/ public read that we'll obsolete next
 			String docid2 = generateDocumentId();
 			debug("inserting docid: " + docid2 + ".1 which has public read/write section");
 			Vector<String> accessRules1 = new Vector<String>();
@@ -86,7 +93,16 @@ public class SitemapTest extends MCTestCase {
 					"Doc with public read and write", EML2_0_1,
 					null, null, null, null, accessBlock, null, null, null, null);
 			insertDocumentId(docid2 + ".1", testdocument, SUCCESS, false);
-			
+
+			// Update the previous document so we can test whether sitemaps only list
+			// the head revision in each chain
+			debug("inserting docid: " + docid2 + ".2 which has public read/write section");
+			testdocument = getTestEmlDoc(
+					"Doc with public read and write", EML2_0_1,
+					null, null, null, null, accessBlock, null, null, null, null);
+			updateDocumentId(docid2 + ".2", testdocument, SUCCESS, false);
+
+			// Insert a 2.0.1 document w/o public read (shouldn't show up sitemap)
 			String docid3 = generateDocumentId();
 			debug("inserting docid: " + docid3 + ".1 which has which has " + username + " read/write section");
 			Vector<String> accessRules2 = new Vector<String>();
@@ -97,34 +113,51 @@ public class SitemapTest extends MCTestCase {
 					"Doc with public read and write", EML2_0_1,
 					null, null, null, null, accessBlock2, null, null, null, null);
 			insertDocumentId(docid3 + ".1", testdocument, SUCCESS, false);
-			
+
 			debug("logging out");
 			m.logout();
 
-			// create the directory if it does not exist
-			FileUtil.createDirectory(directoryName);
+			File directory = sitemapTempDir.toFile();
 
-			File directory = new File(directoryName);
-			String urlRoot = "http://foo.example.com/ctx/metacat";
-			String skin = "testskin";
-			Sitemap smap = new Sitemap(directory, urlRoot, skin);
+			String locationBase = "http://foo.example.com/ctx/metacat";
+			String entryBase = "http://foo.example.com/ctx/metacat";
+			 List<String> portalFormats = new ArrayList();
+			portalFormats.addAll(Arrays.asList(PropertyService.getProperty("sitemap.entry.portal.formats").split(";")));
+			String portalBase = PropertyService.getProperty("sitemap.entry.portal.base");
+			Sitemap smap = new Sitemap(directory, locationBase, entryBase, portalBase, portalFormats);
 			smap.generateSitemaps();
-			
-			File sitemap1 = new File(directory, "metacat1.xml");
+
+			File sitemap1 = new File(directory, "sitemap1.xml");
 			assertTrue(sitemap1.exists() && sitemap1.isFile());
-			
-			String doc = FileUtil.readFileToString(directoryName + FileUtil.getFS() + "metacat1.xml");
-			debug("**** sitemap doc *** \n");
-			debug(doc);
+
+			String doc = FileUtil.readFileToString(sitemapTempDir.toString() +
+					"/sitemap1.xml");
+			String indexDoc = FileUtil.readFileToString(
+					sitemapTempDir.toString() + "/sitemap_index.xml");
+
 			assertTrue(doc.indexOf("<?xml") >= 0);
 			assertTrue(doc.indexOf("<urlset") >= 0);
 			assertTrue(doc.indexOf("<url>") >= 0);
 			assertTrue(doc.indexOf("http:") >= 0);
-			
-			// only docid 2 should show up in the sitemap.
+
+			assertTrue(indexDoc.indexOf("<?xml") >= 0);
+			assertTrue(indexDoc.indexOf("<sitemapindex") >= 0);
+			assertTrue(indexDoc.indexOf("<loc>") >= 0);
+			assertTrue(indexDoc.indexOf("<lastmod>") >= 0);
+			assertTrue(indexDoc.indexOf("http:") >= 0);
+
+			// docid1 and docid3 should not show up in the sitemap because they have do not have a public-read access
+			// policy
 			assertTrue(doc.indexOf(docid1) == -1);
-			assertTrue(doc.indexOf(docid2) >= 0);
 			assertTrue(doc.indexOf(docid3) == -1);
+
+			// docid2.2 should show up because it has a public-read access policy and the latest version of a chain
+			assertTrue(doc.indexOf(docid2 + ".2") >= 0);
+
+			// docid2.1 should not show up because, while it has a public-read access policy, it is obsoleted by
+			// docid2.2
+			assertTrue(doc.indexOf(docid2 + ".1") == -1);
+
 		} catch (MetacatAuthException mae) {
 			fail("Authorization failed:\n" + mae.getMessage());
 		} catch (MetacatInaccessibleException mie) {
@@ -133,4 +166,19 @@ public class SitemapTest extends MCTestCase {
 			fail("General exception:\n" + e.getMessage());
 		}
     }
+
+		/**
+		 * Basic smoke test. This should always return a non-zero-length string
+		 * unless something is either very wrong with DataONE or we totally change
+		 * how we do formats so a broken test is useful.
+		 */
+		public void testGetMetadataFormatsQueryString() {
+			File directory = sitemapTempDir.toFile();
+			String locationBase = "http://foo.example.com/ctx/metacat";
+			String entryBase = "http://foo.example.com/ctx/metacat";
+
+			Sitemap smap = new Sitemap(directory, locationBase, entryBase, null, null);
+
+			assertTrue(smap.getMetadataFormatsQueryString().length() > 0);
+		}
 }
